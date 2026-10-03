@@ -34,6 +34,8 @@ BUFFER_DIR="${3:-${REPO_DIR}/buffer}"
 mkdir -p "${SAVE_DIR}" "${BUFFER_DIR}"
 
 export METAMON_SAVE_DIR="${SAVE_DIR}"
+export METAMON_CACHE_DIR="${METAMON_CACHE_DIR:-${HOME}/.cache/metamon}"
+mkdir -p "${METAMON_CACHE_DIR}"
 
 # If pkmn-showdown.node exists, enable high speed battle host
 if [ -f "${REPO_DIR}/metamon/env/vectorized/pkmn-showdown.node" ]; then
@@ -53,6 +55,7 @@ echo "Python:     $(which ${PYTHON_BIN})"
 echo "Mode:       ${MODE}"
 echo "Save dir:   ${SAVE_DIR}"
 echo "Buffer dir: ${BUFFER_DIR}"
+echo "Cache dir:  ${METAMON_CACHE_DIR}"
 
 "${PYTHON_BIN}" -m metamon.rl.online_rl \
     --run_config "${REPO_DIR}/metamon/rl/configs/online_runs/taurosv1a.yaml" \
