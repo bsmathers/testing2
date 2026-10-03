@@ -32,14 +32,18 @@ fi
 
 cd "${REPO_DIR}"
 
-MODE="${1:-both}"
-SAVE_DIR="${2:-${REPO_DIR}/checkpoints}"
-BUFFER_DIR="${3:-${REPO_DIR}/buffer}"
-
-# Shift off the first 3 positional args if provided, leaving any extra flags (e.g. --log)
-[ $# -ge 1 ] && shift
-[ $# -ge 1 ] && shift
-[ $# -ge 1 ] && shift
+if [[ "${1:-}" == --* ]]; then
+    MODE="both"
+    SAVE_DIR="${REPO_DIR}/checkpoints"
+    BUFFER_DIR="${REPO_DIR}/buffer"
+else
+    MODE="${1:-both}"
+    SAVE_DIR="${2:-${REPO_DIR}/checkpoints}"
+    BUFFER_DIR="${3:-${REPO_DIR}/buffer}"
+    [ $# -ge 1 ] && shift
+    [ $# -ge 1 ] && shift
+    [ $# -ge 1 ] && shift
+fi
 
 mkdir -p "${SAVE_DIR}" "${BUFFER_DIR}"
 
