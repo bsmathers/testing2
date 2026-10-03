@@ -44,10 +44,15 @@ if [ -n "${OLD_PIDS}" ]; then
 fi
 
 # 2. Launch the collector directly with explicit flags (no wrappers, no shifting)
-NUM_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
-echo "==> Starting TaurosV1A Collector on ${NUM_CPUS} CPU workers (128 parallel lanes)..."
+TOTAL_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+if [ "${TOTAL_CPUS}" -gt 2 ]; then
+    COLLECTOR_CPUS=$((TOTAL_CPUS - 2))
+else
+    COLLECTOR_CPUS=1
+fi
+echo "==> Starting TaurosV1A Collector on ${COLLECTOR_CPUS} CPU workers (128 parallel lanes, 2 cores reserved for Learner)..."
 echo "    Repo:   ${REPO_DIR}"
-    echo "    Save:   ${SAVE_DIR}"
+echo "    Save:   ${SAVE_DIR}"
 echo "    Buffer: ${BUFFER_DIR}"
 echo "    Log:    ${LOG_FILE}"
 
@@ -59,7 +64,7 @@ nohup "${PYTHON_BIN}" -m metamon.rl.online_rl \
     --save_dir "${SAVE_DIR}" \
     --buffer_dir "${BUFFER_DIR}" \
     --lanes 128 \
-    --n_workers "${NUM_CPUS}" \
+    --n_workers "${COLLECTOR_CPUS}" \
     > "${LOG_FILE}" 2>&1 &
 
 COLLECTOR_PID=$!

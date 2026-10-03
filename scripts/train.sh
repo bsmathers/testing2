@@ -63,8 +63,13 @@ pkill -9 -f "battle_host" 2>/dev/null || true
 pkill -9 -f "pkmn-showdown" 2>/dev/null || true
 sleep 1
 
-# Detect hardware
-NUM_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+# Detect hardware (use all but 2 cores for collector to leave dedicated CPU for learner/OS)
+TOTAL_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+if [ "${TOTAL_CPUS}" -gt 2 ]; then
+    COLLECTOR_CPUS=$((TOTAL_CPUS - 2))
+else
+    COLLECTOR_CPUS=1
+fi
 LANES="${LANES:-128}"
 
 echo "[2/4] Configuration:"
@@ -74,7 +79,7 @@ echo "      Init:           Random initialization (--from_scratch)"
 echo "      Total Epochs:   1500 (1000 steps/epoch)"
 echo "      Self-Play:      Starts at Epoch 300 (min_epoch: 300)"
 echo "      Dataset:        pac-tauros (offline mix) + online FIFO buffer"
-echo "      Collector:      ${LANES} parallel lanes across ${NUM_CPUS} CPU workers"
+echo "      Collector:      ${LANES} parallel lanes across ${COLLECTOR_CPUS} CPU workers (${TOTAL_CPUS} total cores, 2 reserved for Learner)"
 echo "      Save Dir:       ${SAVE_DIR}"
 echo "      Buffer Dir:     ${BUFFER_DIR}"
 echo "      Collector Log:  ${COLLECTOR_LOG}"
@@ -112,14 +117,14 @@ done
 cd "${REPO_DIR}"
 
 # Step 3: Launch the Collector in background
-echo "[3/4] Starting Collector in background (${LANES} lanes, ${NUM_CPUS} CPU workers)..."
+echo "[3/4] Starting Collector in background (${LANES} lanes, ${COLLECTOR_CPUS} CPU workers)..."
 "${PYTHON_BIN}" -m metamon.rl.online_rl \
     --run_config "${REPO_DIR}/metamon/rl/configs/online_runs/taurosv1a.yaml" \
     --mode collect \
     --save_dir "${SAVE_DIR}" \
     --buffer_dir "${BUFFER_DIR}" \
     --lanes "${LANES}" \
-    --n_workers "${NUM_CPUS}" \
+    --n_workers "${COLLECTOR_CPUS}" \
     > "${COLLECTOR_LOG}" 2>&1 &
 COLLECTOR_PID=$!
 echo "      Collector PID: ${COLLECTOR_PID}"
