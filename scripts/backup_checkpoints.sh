@@ -13,7 +13,10 @@ set -eo pipefail
 #   # Or run directly in tmux:
 #   bash scripts/backup_checkpoints.sh ./checkpoints/taurosv1a /workspace/backup/taurosv1a 300
 
-SRC="${1:-./checkpoints/taurosv1a}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+SRC="${1:-${REPO_DIR}/checkpoints/taurosv1a}"
 DEST="${2:-/workspace/backup/taurosv1a}"
 INTERVAL="${3:-300}"
 
