@@ -104,8 +104,8 @@ from metamon.rl.pretrained import (
     get_pretrained_model_names,
 )
 
-WANDB_PROJECT = "online-metamon"
-WANDB_ENTITY = "ut-austin-rpl-metamon"
+WANDB_PROJECT = os.environ.get("METAMON_WANDB_PROJECT", "online-metamon")
+WANDB_ENTITY = os.environ.get("METAMON_WANDB_ENTITY", None)
 
 OPPONENT_POOL_CONFIG_DIR = os.path.join(
     os.path.dirname(__file__), "configs", "opponent_pools"
@@ -967,7 +967,8 @@ if __name__ == "__main__":
             f"({args.lr_warmup_epochs:g} train epochs, linear 0→peak)"
         )
     if args.log:
-        print(f"  W&B: {WANDB_ENTITY}/{WANDB_PROJECT}")
+        entity_display = WANDB_ENTITY or "(default account)"
+        print(f"  W&B: {entity_display}/{WANDB_PROJECT}")
     print()
 
     pretrained = get_pretrained_model(args.base_model)
