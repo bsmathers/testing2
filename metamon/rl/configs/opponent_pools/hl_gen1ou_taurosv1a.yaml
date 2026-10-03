@@ -15,7 +15,7 @@
 #
 # 2. EVOLVING SELF-CHECKPOINTS:
 #    - Discovers TaurosV1A saved epochs + rolling latest/policy.pt
-#    - Activated once min_epoch (10) is reached, recency-weighted.
+#    - Activated once min_epoch (100) is reached, recency-weighted.
 
 defaults:
   team_set: hl_05_26

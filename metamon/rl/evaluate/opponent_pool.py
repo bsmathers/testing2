@@ -70,7 +70,7 @@ def _discover_checkpoints(
         epochs = epochs[::-1][:: int(step)][::-1]
 
     result: List[int] = list(epochs)
-    if include_latest:
+    if include_latest and (min_epoch is None or (epochs and max(epochs) >= min_epoch)):
         latest_path = model.get_path_to_checkpoint(LATEST_CHECKPOINT)
         if os.path.exists(latest_path):
             result.append(LATEST_CHECKPOINT)
