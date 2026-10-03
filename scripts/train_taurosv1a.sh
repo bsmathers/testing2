@@ -18,6 +18,11 @@ MODE="${1:-both}"
 SAVE_DIR="${2:-$(pwd)/checkpoints}"
 BUFFER_DIR="${3:-$(pwd)/buffer}"
 
+# Shift off the first 3 positional args if provided, leaving any extra flags (e.g. --log)
+[ $# -ge 1 ] && shift
+[ $# -ge 1 ] && shift
+[ $# -ge 1 ] && shift
+
 mkdir -p "${SAVE_DIR}" "${BUFFER_DIR}"
 
 export METAMON_SAVE_DIR="${SAVE_DIR}"
