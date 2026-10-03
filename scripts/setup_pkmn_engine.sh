@@ -10,6 +10,33 @@ PKMN_DIR="${ROOT_DIR}/pkmn-engine"
 
 echo "=== Metamon @pkmn/engine Setup ==="
 
+# 0. Check or install Node.js / npm
+if [ -d "${ROOT_DIR}/.node/bin" ]; then
+    export PATH="${ROOT_DIR}/.node/bin:${PATH}"
+fi
+
+if command -v node &> /dev/null && command -v npm &> /dev/null; then
+    echo "Found Node.js: $(node --version)"
+    echo "Found npm:     $(npm --version)"
+else
+    echo "Node.js or npm not found in PATH."
+    if command -v apt-get &> /dev/null && [ "$(id -u)" -eq 0 ]; then
+        echo "Installing Node.js 20 LTS via apt..."
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+    else
+        echo "Downloading standalone Node.js Linux x86_64 binary..."
+        NODE_VER="v20.18.0"
+        NODE_TAR="node-${NODE_VER}-linux-x64.tar.xz"
+        curl -L "https://nodejs.org/dist/${NODE_VER}/${NODE_TAR}" -o "/tmp/${NODE_TAR}"
+        mkdir -p "${ROOT_DIR}/.node"
+        tar -xf "/tmp/${NODE_TAR}" -C "${ROOT_DIR}/.node" --strip-components=1
+        rm "/tmp/${NODE_TAR}"
+        export PATH="${ROOT_DIR}/.node/bin:${PATH}"
+    fi
+    echo "Installed Node.js: $(node --version)"
+fi
+
 # 1. Check or install Zig
 if command -v zig &> /dev/null; then
     echo "Found Zig: $(zig version)"

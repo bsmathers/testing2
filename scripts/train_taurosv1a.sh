@@ -20,6 +20,11 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Ensure metamon and root directory are on PYTHONPATH
 export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
 
+# Ensure local node is in PATH if installed standalone
+if [ -d "${REPO_DIR}/.node/bin" ]; then
+    export PATH="${REPO_DIR}/.node/bin:${PATH}"
+fi
+
 cd "${REPO_DIR}"
 
 MODE="${1:-both}"
