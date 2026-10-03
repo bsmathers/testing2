@@ -42,16 +42,27 @@ def print_banner():
     print()
 
 
-poke_env_version = version("poke-env")
-
 if not os.environ.get("METAMON_ALLOW_ANY_POKE_ENV"):
-    if poke_env_version != "0.8.3.3":
+    try:
+        poke_env_version = version("poke-env")
+        if poke_env_version != "0.8.3.3":
+            raise ImportError(
+                f"poke-env version {poke_env_version} is not officially supported.\n"
+                f"Please install version '0.8.3.3', found here: https://github.com/UT-Austin-RPL/poke-env).\n"
+                f"This error is here to prevent silent bugs. If you are sure you want to use a\n"
+                f"different version of poke-env, set the METAMON_ALLOW_ANY_POKE_ENV environment\n"
+                f"variable to True."
+            )
+    except Exception as e:
+        if isinstance(e, ImportError):
+            raise
         raise ImportError(
-            f"poke-env version {poke_env_version} is not officially supported.\n"
-            f"Please install version '0.8.3.3', found here: https://github.com/UT-Austin-RPL/poke-env).\n"
-            f"This error is here to prevent silent bugs. If you are sure you want to use a\n"
-            f"different version of poke-env, set the METAMON_ALLOW_ANY_POKE_ENV environment\n"
-            f"variable to True."
-        )
+            "poke-env is not installed. Please install it with:\n"
+            "  pip install -e .\n"
+            "or:\n"
+            "  pip install git+https://github.com/UT-Austin-RPL/poke-env.git\n"
+            "If you are using system Python on Linux, you may need `--break-system-packages`.\n"
+            "To ignore this check, set METAMON_ALLOW_ANY_POKE_ENV=1"
+        ) from None
 
 from .config import SUPPORTED_BATTLE_FORMATS, METAMON_CACHE_DIR
