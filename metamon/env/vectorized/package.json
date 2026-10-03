@@ -9,6 +9,10 @@
     "start": "node battle_host.js"
   },
   "dependencies": {
+    "@pkmn/data": "^0.10.11",
+    "@pkmn/protocol": "^0.7.3",
+    "@pkmn/sim": "^0.10.11",
+    "@pkmn/view": "^0.7.3",
     "pokemon-showdown": "^0.11.10"
   }
 }

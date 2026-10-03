@@ -81,15 +81,39 @@ try {
 
 let pkmnEngine = null;
 let pkmnData = null;
-let pkmnProtocol = null;
-try {
-  // Check standard node_modules or env override
-  const enginePath = process.env.METAMON_PKMN_ENGINE || "@pkmn/engine";
-  pkmnEngine = require(enginePath);
-  pkmnData = require("@pkmn/data");
-  pkmnProtocol = require("@pkmn/protocol");
-} catch (_) {
-  // Engine addon not installed; will use Showdown for all battles
+let pkmnSim = null;
+let gen1 = null;
+let engineReady = false;
+
+function findEngineAddon() {
+  const candidates = [
+    process.env.METAMON_PKMN_ENGINE,
+    path.join(__dirname, "pkmn-showdown.node"),
+    path.join(__dirname, "node_modules", "@pkmn", "engine", "pkmn-showdown.node"),
+    path.join(__dirname, "..", "..", "..", "build", "lib", "pkmn-showdown.node"),
+  ];
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) return path.resolve(c);
+  }
+  return null;
+}
+
+async function tryInitEngine() {
+  try {
+    pkmnEngine = require("@pkmn/engine");
+    pkmnData = require("@pkmn/data");
+    pkmnSim = require("@pkmn/sim");
+
+    const addonPath = findEngineAddon();
+    if (addonPath && pkmnEngine.initialize) {
+      await pkmnEngine.initialize(true, addonPath);
+      const gens = new pkmnData.Generations(pkmnSim.Dex);
+      gen1 = gens.get(1);
+      engineReady = true;
+    }
+  } catch (err) {
+    engineReady = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -152,25 +176,78 @@ class ShowdownLane {
 // Fast Native @pkmn/engine Lane (Gen 1)
 // ---------------------------------------------------------------------------
 
-function parsePackedGen1Team(packedStr) {
-  // Converts packed string into Gens(Dex).forGen(1) parsed team
-  const dex = Showdown ? Showdown.Dex : null;
-  if (!dex) return [];
-  const parsed = dex.forGen(1).fastUnpackTeam(packedStr);
-  return parsed.map((p) => ({
-    name: p.name || p.species,
-    species: p.species,
-    moves: p.moves || [],
-    level: p.level || 100,
-    ivs: p.ivs,
-    evs: p.evs,
-  }));
+function createEngineRequest(engineBattle, gen, sideId, res) {
+  const isP1 = sideId === "p1";
+  const playerChoiceType = isP1 ? res.p1 : res.p2;
+  const side = engineBattle.side(sideId);
+  const pokemonList = [];
+
+  for (const mon of Array.from(side.pokemon)) {
+    const speciesData = gen.species.get(mon.stored.species);
+    const speciesName = speciesData ? speciesData.name : mon.stored.species;
+    const maxHp = mon.stored.stats.hp;
+    const condition =
+      mon.hp === 0
+        ? "0 fnt"
+        : mon.status
+        ? `${mon.hp}/${maxHp} ${mon.status}`
+        : `${mon.hp}/${maxHp}`;
+    const moveIds = Array.from(mon.stored.moves).map((m) => m.id);
+
+    pokemonList.push({
+      ident: `${sideId}: ${speciesName}`,
+      details: speciesName,
+      condition: condition,
+      active: mon.active,
+      stats: mon.stored.stats,
+      moves: moveIds,
+      baseAbility: "",
+      item: "",
+      pokeball: "pokeball",
+    });
+  }
+
+  const sideObj = { name: sideId, id: sideId, pokemon: pokemonList };
+
+  if (playerChoiceType === "pass" || !playerChoiceType) {
+    if (res.type) return null;
+    return { wait: true, side: sideObj };
+  }
+
+  if (playerChoiceType === "switch") {
+    return { forceSwitch: [true], side: sideObj };
+  }
+
+  const activeMoves = [];
+  for (const m of Array.from(side.active.moves)) {
+    const moveData = gen.moves.get(m.id);
+    const moveName = moveData ? moveData.name : m.id;
+    activeMoves.push({
+      move: moveName,
+      id: m.id,
+      pp: m.pp,
+      maxpp: Math.floor((moveData.pp * 8) / 5),
+      target: moveData.target,
+      disabled: !!m.disabled,
+    });
+  }
+
+  return { active: [{ moves: activeMoves }], side: sideObj };
+}
+
+function stringifyProtocolLine(line) {
+  let s = "|" + line.args.join("|");
+  for (const [k, v] of Object.entries(line.kwArgs || {})) {
+    s += "|[" + k + "]" + (v ? " " + v : "");
+  }
+  return s;
 }
 
 class EngineLane {
   constructor(id) {
     this.id = id;
     this.battle = null;
+    this.logParser = null;
     this.epoch = 0;
     this.pendingChoices = { p1: null, p2: null };
   }
@@ -180,61 +257,165 @@ class EngineLane {
     this.pendingChoices = { p1: null, p2: null };
 
     try {
-      const { Battle, Choice } = pkmnEngine;
-      const dex = Showdown ? Showdown.Dex.forGen(1) : null;
+      const { Battle, Log, Lookup, Info } = pkmnEngine;
 
-      const p1Team = parsePackedGen1Team(p1spec.team);
-      const p2Team = parsePackedGen1Team(p2spec.team);
+      const p1Team = Showdown.Teams.unpack(p1spec.team);
+      const p2Team = Showdown.Teams.unpack(p2spec.team);
 
-      let seed = null;
-      if (spec.seed) {
-        seed = Array.isArray(spec.seed) ? spec.seed : [1, 2, 3, 4];
+      let seed = [1, 2, 3, 4];
+      if (spec.seed && Array.isArray(spec.seed)) {
+        seed = spec.seed.slice(0, 4);
       }
 
-      this.battle = Battle.create(1, {
-        p1: { name: p1spec.name || "p1", team: p1Team },
-        p2: { name: p2spec.name || "p2", team: p2Team },
+      this.battle = Battle.create(gen1, {
+        p1: { name: "p1", team: p1Team },
+        p2: { name: "p2", team: p2Team },
         seed: seed,
         showdown: true,
         log: true,
       });
 
-      // Emit initial start chunk & requests
-      this._emitInitialState();
+      this.logParser = new Log(
+        gen1,
+        Lookup.get(gen1),
+        new Info(gen1, { p1: { name: "p1", team: p1Team }, p2: { name: "p2", team: p2Team } })
+      );
+
+      const res0 = this.battle.update(undefined, undefined);
+      this.lastResult = res0;
+      this._emitTurn(res0);
     } catch (err) {
       emitLaneError(this.id, epoch, `Engine start error: ${err.message}`);
     }
   }
 
-  _emitInitialState() {
-    const chunk = this.battle.initial();
-    if (chunk) {
-      emitChunk(this.id, this.epoch, "p1", chunk.p1);
-      emitChunk(this.id, this.epoch, "p2", chunk.p2);
+  _emitTurn(res) {
+    try {
+      const logLines = Array.from(this.logParser.parse(this.battle.log)).map(stringifyProtocolLine);
+      const reqP1 = createEngineRequest(this.battle, gen1, "p1", res);
+      const reqP2 = createEngineRequest(this.battle, gen1, "p2", res);
+
+      // Format p1 chunk
+      const p1Parts = [];
+      if (reqP1) p1Parts.push(`|request|${JSON.stringify(reqP1)}`);
+      p1Parts.push(...logLines);
+
+      // Format p2 chunk
+      const p2Parts = [];
+      if (reqP2) p2Parts.push(`|request|${JSON.stringify(reqP2)}`);
+      p2Parts.push(...logLines);
+
+      // Check battle conclusion
+      if (res.type) {
+        const side0Fainted = this.battle.side("p1").fainted;
+        const side1Fainted = this.battle.side("p2").fainted;
+        let endLine = "|tie";
+        if (side0Fainted && !side1Fainted) endLine = "|win|p2";
+        else if (side1Fainted && !side0Fainted) endLine = "|win|p1";
+
+        p1Parts.push(endLine);
+        p2Parts.push(endLine);
+      }
+
+      if (p1Parts.length > 0) emitChunk(this.id, this.epoch, "p1", p1Parts.join("\n"));
+      if (p2Parts.length > 0) emitChunk(this.id, this.epoch, "p2", p2Parts.join("\n"));
+    } catch (err) {
+      emitLaneError(this.id, this.epoch, `Engine emit error: ${err.message}`);
     }
+  }
+
+  _resolveChoice(sideId, choiceStr) {
+    const { Choice } = pkmnEngine;
+    if (!this.lastResult) return Choice.pass;
+
+    let validChoices = [];
+    try {
+      validChoices = this.battle.choices(sideId, this.lastResult) || [];
+    } catch (_) {
+      validChoices = [];
+    }
+    if (validChoices.length === 0) {
+      return Choice.pass;
+    }
+
+    if (!choiceStr || choiceStr === "default" || choiceStr === "pass") {
+      return validChoices[0];
+    }
+
+    const parts = choiceStr.trim().split(/\s+/);
+    const verb = parts[0].toLowerCase();
+    const target = parts.slice(1).join(" ").toLowerCase();
+    const side = this.battle.side(sideId);
+
+    let candidate = null;
+    if (verb === "move") {
+      let slot = /^[1-4]$/.test(target) ? parseInt(target, 10) : 0;
+      if (!slot) {
+        const norm = target.replace(/[^a-z0-9]/g, "");
+        const moves = Array.from(side.active.moves);
+        for (let i = 0; i < moves.length; i++) {
+          if (moves[i].id.replace(/[^a-z0-9]/g, "") === norm) {
+            slot = i + 1;
+            break;
+          }
+        }
+      }
+      if (slot) candidate = Choice.move(slot);
+    } else if (verb === "switch") {
+      let slot = /^[2-6]$/.test(target) ? parseInt(target, 10) : 0;
+      if (!slot) {
+        const norm = target.replace(/[^a-z0-9]/g, "");
+        const mons = Array.from(side.pokemon);
+        for (let i = 0; i < mons.length; i++) {
+          if (mons[i].stored.species.toLowerCase().replace(/[^a-z0-9]/g, "") === norm) {
+            slot = i + 1;
+            break;
+          }
+        }
+      }
+      if (slot) candidate = Choice.switch(slot);
+    }
+
+    if (candidate) {
+      const match = validChoices.find(
+        (v) => v.type === candidate.type && v.data === candidate.data
+      );
+      if (match) return match;
+    }
+
+    return validChoices[0];
   }
 
   choose(side, choiceStr, epoch) {
     if (!this.battle || (epoch !== undefined && epoch !== this.epoch)) return;
     this.pendingChoices[side] = String(choiceStr);
 
-    // If both players have made their choices, step the engine
-    if (this.pendingChoices.p1 !== null && this.pendingChoices.p2 !== null) {
+    const needP1 = !this.lastResult || this.lastResult.p1 !== "pass";
+    const needP2 = !this.lastResult || this.lastResult.p2 !== "pass";
+
+    const p1Ready = !needP1 || this.pendingChoices.p1 !== null;
+    const p2Ready = !needP2 || this.pendingChoices.p2 !== null;
+
+    if (p1Ready && p2Ready) {
       this._step();
     }
   }
 
   _step() {
     try {
-      const c1 = this.pendingChoices.p1;
-      const c2 = this.pendingChoices.p2;
+      const c1Str = this.pendingChoices.p1;
+      const c2Str = this.pendingChoices.p2;
       this.pendingChoices = { p1: null, p2: null };
 
-      const result = this.battle.update(c1, c2);
-      if (result) {
-        if (result.p1) emitChunk(this.id, this.epoch, "p1", result.p1);
-        if (result.p2) emitChunk(this.id, this.epoch, "p2", result.p2);
-      }
+      const needP1 = !this.lastResult || this.lastResult.p1 !== "pass";
+      const needP2 = !this.lastResult || this.lastResult.p2 !== "pass";
+
+      const c1 = needP1 ? this._resolveChoice("p1", c1Str) : pkmnEngine.Choice.pass;
+      const c2 = needP2 ? this._resolveChoice("p2", c2Str) : pkmnEngine.Choice.pass;
+
+      const res = this.battle.update(c1, c2);
+      this.lastResult = res;
+      this._emitTurn(res);
     } catch (err) {
       emitLaneError(this.id, this.epoch, `Engine step error: ${err.message}`);
     }
@@ -242,6 +423,7 @@ class EngineLane {
 
   destroy() {
     this.battle = null;
+    this.logParser = null;
     this.pendingChoices = { p1: null, p2: null };
   }
 }
@@ -255,9 +437,8 @@ const lanes = new Map();
 function getLane(id, formatid) {
   let lane = lanes.get(id);
   if (!lane) {
-    // If gen1 and pkmnEngine is ready, use high speed engine
     const isGen1 = formatid && formatid.toLowerCase().startsWith("gen1");
-    if (isGen1 && pkmnEngine && pkmnEngine.Battle) {
+    if (isGen1 && engineReady) {
       lane = new EngineLane(id);
     } else {
       lane = new ShowdownLane(id);
@@ -310,27 +491,35 @@ function handleCommand(msg) {
   }
 }
 
-const rl = readline.createInterface({ input: process.stdin });
-rl.on("line", (line) => {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-  let msg;
-  try {
-    msg = JSON.parse(trimmed);
-  } catch (err) {
-    emitHostError(`bad json: ${err.message}`);
-    return;
-  }
-  try {
-    handleCommand(msg);
-  } catch (err) {
-    emitLaneError(
-      msg && msg.lane !== undefined ? msg.lane : 0,
-      msg && msg.epoch !== undefined ? msg.epoch : 0,
-      `cmd ${msg && msg.cmd}: ${err.message}`
-    );
-  }
-});
-rl.on("close", () => process.exit(0));
+async function main() {
+  await tryInitEngine();
 
-emitReady();
+  const rl = readline.createInterface({ input: process.stdin });
+  rl.on("line", (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let msg;
+    try {
+      msg = JSON.parse(trimmed);
+    } catch (err) {
+      emitHostError(`bad json: ${err.message}`);
+      return;
+    }
+    try {
+      handleCommand(msg);
+    } catch (err) {
+      emitLaneError(
+        msg && msg.lane !== undefined ? msg.lane : 0,
+        msg && msg.epoch !== undefined ? msg.epoch : 0,
+        `cmd ${msg && msg.cmd}: ${err.message}`
+      );
+    }
+  });
+  rl.on("close", () => process.exit(0));
+
+  emitReady();
+}
+
+main().catch((err) => {
+  emitHostError(`Fatal initialization error: ${err.message}`);
+});
