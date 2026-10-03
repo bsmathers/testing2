@@ -29,12 +29,12 @@ def main():
         print("No discover specs found.")
 
     pool._maybe_refresh_discovered(force=True)
-    self_play_active = any("TaurosSelf" in name for name, _ in pool.active_agents)
+    self_play_active = any("TaurosSelf" in name for name, _ in pool.agents)
     print(f"\nAre TaurosSelf checkpoints active in the pool right now?: {self_play_active}")
-    print(f"Total active pool rows: {len(pool.active_agents)}")
+    print(f"Total active pool rows: {len(pool.agents)}")
 
     print("\nCurrent active pool roster:")
-    for name, agent_spec in pool.active_agents:
+    for name, agent_spec in pool.agents:
         model = agent_spec.get("model_name")
         ckpts = agent_spec.get("checkpoints")
         print(f"  - {name:<28} (model: {model}, ckpts: {ckpts})")
