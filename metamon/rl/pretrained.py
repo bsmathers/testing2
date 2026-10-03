@@ -325,10 +325,7 @@ class LocalPretrainedModel(PretrainedModel):
     def __init__(self, amago_ckpt_dir: str, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.local_ckpt_dir = os.path.join(amago_ckpt_dir, self.model_name, "ckpts")
-        if not os.path.exists(self.local_ckpt_dir):
-            raise FileNotFoundError(
-                f"Checkpoint directory {self.local_ckpt_dir} was not found. Check the amago_ckpt_dir and model_name arguments."
-            )
+        os.makedirs(self.local_ckpt_dir, exist_ok=True)
 
     def get_path_to_checkpoint(self, checkpoint: int) -> str:
         return os.path.join(
@@ -1711,15 +1708,13 @@ TAUROSV1A_SAVE_DIR = os.environ.get(
 
 
 @pretrained_model()
-class TaurosV1A(LocalFinetunedModel):
-    """Online RL finetune TaurosV1A (gen1ou) - trained with public HF opponents and datasets.
+class TaurosV1A(LocalPretrainedModel):
+    """Online RL run TaurosV1A (gen1ou) — ~35M GroupedV2 from scratch.
 
-    Checkpoints live under
-    ``{save_dir}/taurosv1a/ckpts/policy_weights/policy_epoch_{N}.pt``.
-    Pass ``checkpoint=N`` to ``initialize_agent`` or the evaluate CLI to pick a
-    specific epoch.
-    Pass ``checkpoint=-1`` (``LATEST_CHECKPOINT``) to load the learner's rolling
-    ``ckpts/latest/policy.pt``.
+    Architecture: grouped_v2_medium.gin (exact same architecture, spaces,
+    tokenizer, and reward as TaurosV1). Trained from random initialization
+    (--from_scratch) for 1500 epochs with public HF opponents + evolving
+    self-checkpoints after epoch 100.
     """
 
     def __init__(self, amago_ckpt_dir: Optional[str] = None):
@@ -1730,12 +1725,22 @@ class TaurosV1A(LocalFinetunedModel):
             or os.path.abspath("checkpoints")
         )
         super().__init__(
-            base_model=TaurosV0,
             amago_ckpt_dir=ckpt_dir,
             model_name="taurosv1a",
-            default_checkpoint=100,
+            model_gin_config="grouped_v2_medium.gin",
             train_gin_config="grouped_v2_large_isfilter.gin",
+            default_checkpoint=100,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("GroupedObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
             dataset_config="online_selfplay_taurosv1a.yaml",
+            gin_overrides={
+                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
         )
 
     def get_path_to_checkpoint(self, checkpoint: int) -> str:

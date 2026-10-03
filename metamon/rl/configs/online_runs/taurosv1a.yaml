@@ -1,11 +1,13 @@
 # Online RL recipe for TaurosV1A (gen1ou)
 #
-# Finetunes TaurosV0 against a public Hugging Face roster + evolving self-checkpoints.
-# Contains no SmallG1Online models and requires only public HF datasets/models.
+# Exact TaurosV1 architecture (grouped_v2_medium.gin, ~35M parameters)
+# Trained from random initialization (--from_scratch) for 1500 epochs.
+# Opponent pool matches TaurosV1 (hl_gen1ou_mediumg1) minus the SmallG1Online models,
+# plus self-checkpoints after epoch 100.
 
 run_name: taurosv1a
-base_model: TaurosV0
-base_checkpoint: 62
+base_model: TaurosV1A
+from_scratch: true
 battle_format: gen1ou
 
 dataset_config: online_selfplay_taurosv1a.yaml
@@ -21,17 +23,17 @@ online_anneal_epochs: 10
 learning_rate: 1.0e-4
 lr_warmup_epochs: 15
 batch_size_per_gpu: 14
-epochs: 1000
+epochs: 1500
 steps_per_epoch: 1000
 ckpt_interval: 10
 
-# Collect defaults
-lanes: 96
-n_workers: 1
+# Collect defaults - multithreaded across CPU cores
+lanes: 128
+n_workers: 8
 train_timesteps_per_epoch: 500
 temp_low: 1.0
 temp_high: 3.0
 
 # Validate defaults
 val_timesteps: 2000
-val_interval: 1
+val_interval: 10
