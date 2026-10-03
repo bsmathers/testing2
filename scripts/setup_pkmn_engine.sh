@@ -69,7 +69,7 @@ zig build -Dshowdown -Dlog
 # 4. Install npm dependencies in vectorized env
 echo "Setting up Node.js packages..."
 cd "${ROOT_DIR}/metamon/env/vectorized"
-npm install --save-dev @pkmn/data @pkmn/protocol || true
+npm install
 
 # 5. Link built addon into vectorized env
 if [ -f "${PKMN_DIR}/zig-out/lib/pkmn-showdown.node" ]; then

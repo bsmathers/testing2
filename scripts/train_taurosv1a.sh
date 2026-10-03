@@ -42,10 +42,22 @@ export METAMON_SAVE_DIR="${SAVE_DIR}"
 export METAMON_CACHE_DIR="${METAMON_CACHE_DIR:-${HOME}/.cache/metamon}"
 mkdir -p "${METAMON_CACHE_DIR}"
 
-# If pkmn-showdown.node exists, enable high speed battle host
+# Check if pkmn-showdown.node exists; if not, build it automatically
+if [ ! -f "${REPO_DIR}/metamon/env/vectorized/pkmn-showdown.node" ]; then
+    echo "Native Zig simulator (pkmn-showdown.node) not found."
+    echo "Running automatic setup via scripts/setup_pkmn_engine.sh..."
+    bash "${SCRIPT_DIR}/setup_pkmn_engine.sh" || true
+fi
+
 if [ -f "${REPO_DIR}/metamon/env/vectorized/pkmn-showdown.node" ]; then
     export METAMON_BATTLE_HOST="${REPO_DIR}/metamon/env/vectorized/battle_host_engine.js"
     echo "Using high-speed @pkmn/engine battle host: ${METAMON_BATTLE_HOST}"
+else
+    echo "Warning: pkmn-showdown.node not found; falling back to standard battle_host.js"
+    if [ ! -d "${REPO_DIR}/metamon/env/vectorized/node_modules/pokemon-showdown" ]; then
+        echo "Installing node dependencies in metamon/env/vectorized..."
+        (cd "${REPO_DIR}/metamon/env/vectorized" && npm install)
+    fi
 fi
 
 # Detect python binary
