@@ -1,0 +1,14 @@
+# Offline mixture for TaurosV1A online RL run.
+#
+# Exclusively draws from public Hugging Face datasets:
+# - Human replays (UT-Austin-RPL/metamon-replays)
+# - pac-tauros, pac-base, pac-exploratory self-play (UT-Austin-RPL/metamon-self-play)
+#
+# Strictly excludes local-only 'smallg1-online'.
+replay_weight: 0.05
+self_play:
+  pac-base: 0.35
+  pac-exploratory: 0.25
+  pac-tauros: 0.40
+formats:
+  - gen1ou

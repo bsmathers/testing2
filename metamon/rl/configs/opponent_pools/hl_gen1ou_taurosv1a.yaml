@@ -1,0 +1,77 @@
+# Training opponent pool for TaurosV1A (gen1ou).
+#
+# Composed exclusively of public Hugging Face pretrained models + evolving self-checkpoints.
+# Contains NO local-only SmallG1Online models.
+#
+# 1. STATIC ROSTER (public Hugging Face models):
+#    - TaurosV0 (top gen1ou offline 50M model)
+#    - Kakuna
+#    - Alakazam
+#    - SyntheticRLV2
+#    - SyntheticRLV1
+#    - V2AGroupedV2DataAblation
+#    - Superkazam
+#    - Kadabra3
+#
+# 2. EVOLVING SELF-CHECKPOINTS:
+#    - Discovers TaurosV1A saved epochs + rolling latest/policy.pt
+#    - Activated once min_epoch (10) is reached, recency-weighted.
+
+defaults:
+  team_set: hl_05_26
+  battle_backend: metamon
+  checkpoints: [null]
+  temperatures: [0.5, 1.0, 1.25, 1.5, 1.75, 2.0]
+  num_agents: 1
+
+agents:
+  # ---- Static public HF roster ----
+  TaurosV0:
+    model_name: TaurosV0
+    num_agents: 3
+    checkpoints: "range(50, 63, 2)"
+
+  Kakuna:
+    model_name: Kakuna
+    num_agents: 2
+    checkpoints: "range(24, 35, 2)"
+
+  Alakazam:
+    model_name: Alakazam
+    num_agents: 2
+    checkpoints: "range(2, 9, 2)"
+
+  SyntheticRLV2:
+    model_name: SyntheticRLV2
+    num_agents: 2
+    checkpoints: "range(36, 49, 2)"
+
+  SyntheticRLV1:
+    model_name: SyntheticRLV1
+    num_agents: 1
+    checkpoints: [null]
+
+  V2ADataAblation:
+    model_name: V2AGroupedV2DataAblation
+    num_agents: 2
+    checkpoints: "range(74, 91, 2)"
+
+  Superkazam:
+    model_name: Superkazam
+    num_agents: 2
+    checkpoints: "range(38, 51, 2)"
+
+  Kadabra3:
+    model_name: Kadabra3
+    num_agents: 2
+    checkpoints: "range(10, 21, 2)"
+
+  # ---- Evolving self-checkpoints ----
+  TaurosSelf:
+    model_name: TaurosV1A
+    checkpoints:
+      discover: true
+      include_latest: true
+      min_epoch: 10
+      recency_rho: 1.5
+      total_num_agents: 6
