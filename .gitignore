@@ -204,3 +204,6 @@ cython_debug/
 .idea/
 metamon/data/stats
 *.node
+pkmn-engine/
+.zig/
+.node/

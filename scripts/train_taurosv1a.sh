@@ -25,6 +25,11 @@ if [ -d "${REPO_DIR}/.node/bin" ]; then
     export PATH="${REPO_DIR}/.node/bin:${PATH}"
 fi
 
+# Ensure local zig is in PATH if installed standalone
+if [ -d "${REPO_DIR}/.zig" ]; then
+    export PATH="${REPO_DIR}/.zig:${PATH}"
+fi
+
 cd "${REPO_DIR}"
 
 MODE="${1:-both}"

@@ -37,15 +37,47 @@ else
     echo "Installed Node.js: $(node --version)"
 fi
 
-# 1. Check or install Zig
+# 1. Check or install Zig (pkmn/engine requires Zig >= 0.16.0)
+if [ -d "${ROOT_DIR}/.zig" ]; then
+    export PATH="${ROOT_DIR}/.zig:${PATH}"
+fi
+
+NEED_ZIG=1
 if command -v zig &> /dev/null; then
-    echo "Found Zig: $(zig version)"
-else
-    echo "Zig not found in PATH. Downloading standalone Zig for Linux x86_64..."
-    ZIG_VERSION="0.14.0"
-    ZIG_TAR="zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+    CURRENT_ZIG=$(zig version)
+    echo "Found Zig: ${CURRENT_ZIG}"
+    MAJOR=$(echo "${CURRENT_ZIG}" | cut -d. -f1)
+    MINOR=$(echo "${CURRENT_ZIG}" | cut -d. -f2)
+    if [ "${MAJOR}" -gt 0 ] || [ "${MINOR}" -ge 16 ]; then
+        NEED_ZIG=0
+    else
+        echo "Zig ${CURRENT_ZIG} is too old (pkmn/engine requires >= 0.16.0). Upgrading..."
+    fi
+fi
+
+if [ "${NEED_ZIG}" -eq 1 ]; then
+    echo "Downloading standalone Zig 0.16.0..."
+    OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    ARCH="$(uname -m)"
+    if [ "${ARCH}" = "x86_64" ]; then
+        ZIG_ARCH="x86_64"
+    elif [ "${ARCH}" = "arm64" ] || [ "${ARCH}" = "aarch64" ]; then
+        ZIG_ARCH="aarch64"
+    else
+        ZIG_ARCH="${ARCH}"
+    fi
+
+    if [ "${OS}" = "darwin" ]; then
+        ZIG_OS="macos"
+    else
+        ZIG_OS="linux"
+    fi
+
+    ZIG_VERSION="0.16.0"
+    ZIG_TAR="zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}.tar.xz"
     ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TAR}"
-    
+
+    rm -rf "${ROOT_DIR}/.zig"
     mkdir -p "${ROOT_DIR}/.zig"
     curl -L "${ZIG_URL}" -o "/tmp/${ZIG_TAR}"
     tar -xf "/tmp/${ZIG_TAR}" -C "${ROOT_DIR}/.zig" --strip-components=1
@@ -64,7 +96,7 @@ cd "${PKMN_DIR}"
 
 # 3. Build native addon with -Dshowdown -Dlog
 echo "Building @pkmn/engine native addon (-Dshowdown -Dlog)..."
-zig build -Dshowdown -Dlog
+node src/bin/install-pkmn-engine --options="-Dshowdown -Dlog"
 
 # 4. Install npm dependencies in vectorized env
 echo "Setting up Node.js packages..."
