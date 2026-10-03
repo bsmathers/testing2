@@ -56,6 +56,40 @@ else:
     from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
     from amago.nets.ff import Normalization
 
+    # Python 3.12 compatibility fix:
+    # AMAGO defaults `traj_save_len` to float (1e10), causing SequenceWrapper.save_every
+    # to be a float tuple (10000000000.0, 10000000000.0). In Python 3.12,
+    # random.randint(*self.save_every) calls _index(start) which crashes on floats.
+    # We patch SequenceWrapper and Experiment to always coerce save_every / traj_save_len to int.
+    import random
+    from amago.envs.amago_env import SequenceWrapper
+
+    def _safe_random_traj_length(self):
+        if not self.save_every:
+            return None
+        low, high = self.save_every
+        return random.randint(int(low), int(high))
+
+    SequenceWrapper.random_traj_length = _safe_random_traj_length
+
+    _orig_seq_init = SequenceWrapper.__init__
+    def _safe_seq_init(self, env, save_trajs_to, save_every=None, save_trajs_as="npz"):
+        if save_every is not None:
+            save_every = (int(save_every[0]), int(save_every[1]))
+        _orig_seq_init(self, env, save_trajs_to, save_every=save_every, save_trajs_as=save_trajs_as)
+
+    SequenceWrapper.__init__ = _safe_seq_init
+
+    _orig_init_envs = amago.experiment.Experiment.init_envs
+    def _safe_init_envs(self):
+        if hasattr(self, "traj_save_len") and self.traj_save_len is not None:
+            self.traj_save_len = int(self.traj_save_len)
+        if hasattr(self, "max_seq_len") and self.max_seq_len is not None:
+            self.max_seq_len = int(self.max_seq_len)
+        return _orig_init_envs(self)
+
+    amago.experiment.Experiment.init_envs = _safe_init_envs
+
 
 # --------------------------------------------------------------------------- #
 # In-process per-lane battle-outcome bridge                                     #
@@ -291,6 +325,7 @@ def make_placeholder_experiment(
         start_learning_at_epoch=float("inf"),
         start_collecting_at_epoch=float("inf"),
         train_timesteps_per_epoch=0,
+        traj_save_len=int(1e9),
         stagger_traj_file_lengths=False,
         train_batches_per_epoch=0,
         val_interval=None,
