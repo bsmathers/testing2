@@ -79,9 +79,17 @@ echo "Save dir:   ${SAVE_DIR}"
 echo "Buffer dir: ${BUFFER_DIR}"
 echo "Cache dir:  ${METAMON_CACHE_DIR}"
 
+# Filter out any bare '--' delimiter so argparse does not error
+EXTRA_ARGS=()
+for arg in "$@"; do
+    if [ "$arg" != "--" ]; then
+        EXTRA_ARGS+=("$arg")
+    fi
+done
+
 "${PYTHON_BIN}" -m metamon.rl.online_rl \
     --run_config "${REPO_DIR}/metamon/rl/configs/online_runs/taurosv1a.yaml" \
     --mode "${MODE}" \
     --save_dir "${SAVE_DIR}" \
     --buffer_dir "${BUFFER_DIR}" \
-    "$@"
+    "${EXTRA_ARGS[@]}"
