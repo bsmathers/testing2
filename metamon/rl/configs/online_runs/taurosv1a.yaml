@@ -11,10 +11,10 @@ battle_format: gen1ou
 dataset_config: online_selfplay_taurosv1a.yaml
 train_gin_config: grouped_v2_large_isfilter.gin
 train_pool: metamon/rl/configs/opponent_pools/hl_gen1ou_taurosv1a.yaml
-train_team_set: metamon/rl/configs/team_sets/mediumg1_train.yaml
+train_team_set: hl_05_26
 
 val_pool: metamon/rl/configs/opponent_pools/taurosv1a_val.yaml
-val_team_set: expert_curated
+val_team_set: hl_05_26
 
 online_weight: 0.50
 online_anneal_epochs: 10
