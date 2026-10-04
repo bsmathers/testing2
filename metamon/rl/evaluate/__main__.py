@@ -754,7 +754,7 @@ def add_cli(parser):
         default=1.5,
         help=(
             "Default per-decision action delay (seconds) for --eval_type showdown. "
-            "Used on ~90% of decisions unless a long delay is rolled."
+            "Used on ~90%% of decisions unless a long delay is rolled."
         ),
     )
     parser.add_argument(
