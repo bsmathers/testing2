@@ -1853,3 +1853,74 @@ class MetamonOnlineExperiment(MetamonAMAGOExperiment):
             super().collect_new_training_data()
         finally:
             self._reset_policy_temperature()
+
+    def learn(self):
+        """Online RL training loop with corrected epoch synchronization.
+
+        AMAGO's default learn() only sets self.epoch = epoch at the very end of
+        the epoch loop. This override sets self.epoch = epoch at the beginning,
+        ensuring on_end_of_collection(), update_dset_weights(), and logging callbacks
+        see the true active epoch instead of lagging by one.
+        """
+        from tqdm import tqdm
+
+        def make_pbar(loader, epoch_num):
+            if self.verbose:
+                return tqdm(
+                    enumerate(loader),
+                    desc=f"{self.run_name} Epoch {epoch_num} Train",
+                    total=self.train_batches_per_epoch,
+                    colour="green",
+                )
+            else:
+                return enumerate(loader)
+
+        start_epoch = self.epoch
+        for epoch in range(start_epoch, self.epochs):
+            self.epoch = epoch
+            if self.always_load_latest:
+                self.read_latest_policy()
+
+            # environment interaction
+            self.policy_aclr.eval()
+            if (
+                self.val_interval
+                and epoch % self.val_interval == 0
+                and self.val_timesteps_per_epoch > 0
+            ):
+                self.evaluate_val()
+            if (
+                epoch >= self.start_collecting_at_epoch
+                and self.train_timesteps_per_epoch > 0
+            ):
+                self.collect_new_training_data()
+            self.accelerator.wait_for_everyone()
+
+            dset_log = self.dataset.on_end_of_collection(experiment=self)
+            self.log(dset_log, key="dataset")
+            self.init_dloaders()
+            if not self.dataset.ready_for_training:
+                amago.utils.amago_warning(
+                    f"Skipping training on epoch {epoch} because `dataset.ready_for_training` is False"
+                )
+                continue
+
+            # training
+            elif epoch < self.start_learning_at_epoch:
+                continue
+            if self.train_batches_per_epoch > 0:
+                self.policy_aclr.train()
+                for train_step, batch in make_pbar(self.train_dloader, epoch):
+                    total_step = (epoch * self.train_batches_per_epoch) + train_step
+                    log_step = total_step % self.log_interval == 0
+                    loss_dict = self.train_step(batch, log_step=log_step)
+                    if log_step:
+                        self.log(loss_dict, key="train-update")
+            self.accelerator.wait_for_everyone()
+            del self.train_dloader
+
+            # end epoch
+            if self.ckpt_interval and epoch % self.ckpt_interval == 0:
+                self.save_checkpoint()
+            if self.always_save_latest:
+                self.write_latest_policy()

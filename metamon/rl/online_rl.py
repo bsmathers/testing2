@@ -571,11 +571,16 @@ class OnlineMixtureOfDatasets(amago.loading.MixtureOfDatasets):
         self.end_epoch = int(end_epoch)
 
     def configure_from_experiment(self, experiment):
+        self.experiment = experiment
         amago.loading.RLDataset.configure_from_experiment(self, experiment)
         for d in self.all_datasets:
             d.configure_from_experiment(experiment)
         self.update_dset_weights(getattr(experiment, "epoch", 0))
         self._sampling_metrics = collections.defaultdict(int)
+
+    def on_end_of_collection(self, experiment) -> dict[str, Any]:
+        self.experiment = experiment
+        return super().on_end_of_collection(experiment)
 
     def update_dset_weights(self, epoch: int):
         self.check_configured()
@@ -595,12 +600,13 @@ class OnlineMixtureOfDatasets(amago.loading.MixtureOfDatasets):
             (self.fifo, curr_online),
             (self.offline, curr_offline),
         ]
-        if getattr(getattr(self, "experiment", None), "accelerator", None) is not None:
-            if self.experiment.accelerator.is_main_process:
-                print(
-                    f"  [Online Dataset Mixture] Epoch {epoch}: online FIFO weight = {curr_online:.4f}, "
-                    f"offline weight = {curr_offline:.4f} (schedule: epochs {self.start_epoch} -> {self.end_epoch})"
-                )
+        accelerator = getattr(self.experiment, "accelerator", None)
+        if accelerator is None or accelerator.is_main_process:
+            print(
+                f"  [Online Dataset Mixture] Epoch {epoch}: online FIFO weight = {curr_online:.4f}, "
+                f"offline weight = {curr_offline:.4f} (schedule: epochs {self.start_epoch} -> {self.end_epoch})",
+                flush=True,
+            )
 
 
 def build_online_mixture_dataset(
@@ -1192,6 +1198,8 @@ if __name__ == "__main__":
             f"  Resuming full accelerate training state from epoch {resume_epoch} ..."
         )
         experiment.load_checkpoint(resume_epoch, resume_training_state=True)
+        if hasattr(experiment.dataset, "update_dset_weights"):
+            experiment.dataset.update_dset_weights(experiment.epoch)
         print(
             f"  Resumed at epoch {experiment.epoch}; continuing to {args.epochs} "
             f"({max(args.epochs - experiment.epoch, 0)} epochs / "
