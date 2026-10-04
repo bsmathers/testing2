@@ -414,21 +414,26 @@ def _resolve_dataset_config_path(path: str) -> str:
     raise FileNotFoundError(f"Dataset config not found: {path}")
 
 
-def _latest_training_state_epoch(ckpt_dir: str, run_name: str) -> int:
+def _latest_training_state_epoch(ckpt_dir_or_save_dir: str, run_name: str) -> int:
     """Newest epoch with a full accelerate state under ckpts/training_states/."""
-    ts_dir = os.path.join(ckpt_dir, "training_states")
+    candidates = [
+        os.path.join(ckpt_dir_or_save_dir, run_name, "ckpts", "training_states"),
+        os.path.join(ckpt_dir_or_save_dir, "ckpts", "training_states"),
+        os.path.join(ckpt_dir_or_save_dir, "training_states"),
+    ]
     prefix = f"{run_name}_epoch_"
     epochs = []
-    if os.path.isdir(ts_dir):
-        for name in os.listdir(ts_dir):
-            if name.startswith(prefix):
-                try:
-                    epochs.append(int(name[len(prefix) :]))
-                except ValueError:
-                    pass
+    for ts_dir in candidates:
+        if os.path.isdir(ts_dir):
+            for name in os.listdir(ts_dir):
+                if name.startswith(prefix):
+                    try:
+                        epochs.append(int(name[len(prefix) :]))
+                    except ValueError:
+                        pass
     if not epochs:
         raise FileNotFoundError(
-            f"No full accelerate states found under {ts_dir} "
+            f"No full accelerate states found under any candidate: {candidates} "
             f"(expected dirs like '{prefix}<N>')."
         )
     return max(epochs)
@@ -1123,8 +1128,10 @@ if __name__ == "__main__":
         start_epoch = args.online_anneal_start_epoch
         if start_epoch is None and args.resume_training_state:
             try:
-                start_epoch = args.resume_epoch or _latest_training_state_epoch(
-                    args.save_dir, args.run_name
+                start_epoch = (
+                    args.resume_epoch
+                    if args.resume_epoch is not None
+                    else _latest_training_state_epoch(args.save_dir, args.run_name)
                 )
             except Exception:
                 start_epoch = None
@@ -1198,6 +1205,8 @@ if __name__ == "__main__":
             f"  Resuming full accelerate training state from epoch {resume_epoch} ..."
         )
         experiment.load_checkpoint(resume_epoch, resume_training_state=True)
+        if args.online_anneal_start_epoch is None and hasattr(experiment.dataset, "start_epoch"):
+            experiment.dataset.start_epoch = experiment.epoch
         if hasattr(experiment.dataset, "update_dset_weights"):
             experiment.dataset.update_dset_weights(experiment.epoch)
         print(
