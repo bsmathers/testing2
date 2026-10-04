@@ -75,14 +75,6 @@ import gin
 import amago
 import wandb
 
-try:
-    import torch._inductor.config as inductor_config
-
-    inductor_config.triton.cudagraph_skip_dynamic_graphs = True
-    inductor_config.triton.cudagraph_dynamic_shape_warn_limit = None
-except (ImportError, AttributeError):
-    pass
-
 import metamon
 from metamon.data import MetamonDataset
 from metamon.env import get_metamon_teams
