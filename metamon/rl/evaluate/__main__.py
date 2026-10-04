@@ -99,6 +99,7 @@ def pretrained_vs_metamon(
     n_workers: int = 1,
     opponent_gpu_idx: Optional[int] = None,
     action_temperature: float = 1.0,
+    opponent_temperature: Optional[float] = None,
     agent_sample: bool = True,
     opponent_sample: bool = True,
     eval_player_side: int = 0,
@@ -140,11 +141,16 @@ def pretrained_vs_metamon(
     else:
         if not opponent_agent:
             raise ValueError("Provide opponent_agent or opponent_config_path")
+        opp_temp = (
+            opponent_temperature
+            if opponent_temperature is not None
+            else action_temperature
+        )
         pool_dict = make_simple_opponent_pool_dict(
             opponent_agent=opponent_agent,
             team_set=team_set_name,
             checkpoint=opponent_checkpoint,
-            temperature=1.0,
+            temperature=opp_temp,
         )
         print("Opponent pool config (auto-generated from CLI):")
         print(yaml.dump(pool_dict, default_flow_style=False, sort_keys=False))
@@ -153,7 +159,7 @@ def pretrained_vs_metamon(
             battle_format=battle_format,
             team_set=team_set_name,
             checkpoint=opponent_checkpoint,
-            temperature=1.0,
+            temperature=opp_temp,
         )
 
     agent = pretrained_model.initialize_agent(
@@ -546,6 +552,7 @@ def _get_default_eval(args, base_eval_kwargs):
                 "team_set_name": args.team_set,
                 "opponent_agent": args.opponent_agent,
                 "opponent_checkpoint": args.opponent_checkpoint,
+                "opponent_temperature": args.opponent_temperature,
                 "opponent_config_path": args.opponent_config,
                 "num_parallel": args.num_parallel,
                 "n_workers": args.n_workers,
@@ -899,6 +906,12 @@ def add_cli(parser):
         type=float,
         default=1.0,
         help="Temperature for temperature-based sampling. Higher temperature means more exploration.",
+    )
+    parser.add_argument(
+        "--opponent_temperature",
+        type=float,
+        default=None,
+        help="Action temperature for the opponent NN in --eval_type metamon (defaults to --temperature).",
     )
     parser.add_argument(
         "--team_preview_checkpoint",
