@@ -261,7 +261,15 @@ class PretrainedModel:
         # checkpoint == 0 means "untrained base, skip load"; any non-zero value
         # (including the LATEST_CHECKPOINT sentinel) loads weights from disk.
         if checkpoint != 0:
-            ckpt_state = torch.load(ckpt_path, map_location="cpu")
+            ckpt_state = None
+            for _attempt in range(10):
+                try:
+                    ckpt_state = torch.load(ckpt_path, map_location="cpu")
+                    break
+                except Exception as _load_err:
+                    if _attempt == 9:
+                        raise
+                    time.sleep(1)
             model_state = experiment.policy.state_dict()
             self._validate_checkpoint(ckpt_state, model_state)
             experiment.policy.load_state_dict(ckpt_state, strict=True)

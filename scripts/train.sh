@@ -30,7 +30,14 @@ mkdir -p "${SAVE_DIR}" "${BUFFER_DIR}/gen1ou" "${LOG_DIR}"
 
 export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
 export METAMON_SAVE_DIR="${SAVE_DIR}"
-export METAMON_CACHE_DIR="${METAMON_CACHE_DIR:-${HOME}/.cache/metamon}"
+
+if [ -z "${METAMON_CACHE_DIR:-}" ]; then
+    if [ -d "/root/cache_dir" ]; then
+        export METAMON_CACHE_DIR="/root/cache_dir"
+    else
+        export METAMON_CACHE_DIR="${HOME}/.cache/metamon"
+    fi
+fi
 export METAMON_ALLOW_ANY_POKE_ENV=1
 
 # Ensure local node/zig are in PATH if present
@@ -107,6 +114,9 @@ cleanup() {
     pkill -9 -P "${LEARNER_PID}" 2>/dev/null || true
     [ -n "${COLLECTOR_PID}" ] && kill -9 "${COLLECTOR_PID}" 2>/dev/null || true
     [ -n "${LEARNER_PID}" ] && kill -9 "${LEARNER_PID}" 2>/dev/null || true
+    pkill -9 -f "battle_host" 2>/dev/null || true
+    pkill -9 -f "pkmn-showdown" 2>/dev/null || true
+    pkill -9 -f "metamon.rl.online_rl" 2>/dev/null || true
     echo "[Shutdown] All training processes stopped."
     exit 0
 }
@@ -136,21 +146,27 @@ COLLECTOR_PID=$!
 echo "      Collector PID: ${COLLECTOR_PID}"
 
 # Health check: verify collector initializes without immediately crashing
-echo "      Verifying collector health..."
-sleep 5
+echo "      Verifying collector health and engine status..."
+ENGINE_VERIFIED=0
+for i in {1..20}; do
+    if ! kill -0 "${COLLECTOR_PID}" 2>/dev/null; then
+        echo "============================================================"
+        echo " [ERROR] Collector process died immediately on startup!"
+        echo "============================================================"
+        cat "${COLLECTOR_LOG}"
+        exit 1
+    fi
+    if grep -q "HIGH-SPEED NATIVE ZIG ENGINE ACTIVE" "${COLLECTOR_LOG}" 2>/dev/null; then
+        echo "      [Engine Verified] High-speed native Zig @pkmn/engine is ACTIVE!"
+        ENGINE_VERIFIED=1
+        break
+    fi
+    sleep 1
+done
 
-if ! kill -0 "${COLLECTOR_PID}" 2>/dev/null; then
-    echo "============================================================"
-    echo " [ERROR] Collector process died immediately on startup!"
-    echo "============================================================"
-    cat "${COLLECTOR_LOG}"
-    exit 1
+if [ "${ENGINE_VERIFIED}" -eq 0 ]; then
+    echo "      [Info] Collector is running (PID: ${COLLECTOR_PID}). Log: ${COLLECTOR_LOG}"
 fi
-
-if grep -q "HIGH-SPEED NATIVE ZIG ENGINE ACTIVE" "${COLLECTOR_LOG}" 2>/dev/null; then
-    echo "      [Engine Verified] High-speed native Zig @pkmn/engine is ACTIVE!"
-fi
-echo "      Collector is running healthily! Log: ${COLLECTOR_LOG}"
 
 # Step 4: Background Buffer Rate Monitor
 # Prints live buffer production statistics every 30 seconds
@@ -190,7 +206,7 @@ echo ""
     --mode learn \
     --save_dir "${SAVE_DIR}" \
     --buffer_dir "${BUFFER_DIR}" \
-    "${EXTRA_ARGS[@]}" 2>&1 | tee "${LEARNER_LOG}" &
+    "${EXTRA_ARGS[@]}" > >(tee "${LEARNER_LOG}") 2>&1 &
 LEARNER_PID=$!
 
 wait "${LEARNER_PID}"
