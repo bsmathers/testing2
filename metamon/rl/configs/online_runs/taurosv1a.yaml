@@ -21,6 +21,7 @@ val_team_set: hl_05_26
 dset_max_size: 150000
 initial_online_weight: 0.10
 online_weight: 0.50
+online_anneal_start_epoch: 170
 online_anneal_end_epoch: 600
 learning_rate: 1.0e-4
 lr_warmup_epochs: 15

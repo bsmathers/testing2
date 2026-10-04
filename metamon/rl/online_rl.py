@@ -287,7 +287,7 @@ def add_cli(parser):
     parser.add_argument(
         "--online_anneal_start_epoch",
         type=int,
-        default=None,
+        default=170,
         help="Epoch at which linear ramp from initial_online_weight starts.",
     )
     parser.add_argument(
@@ -559,8 +559,8 @@ class OnlineMixtureOfDatasets(amago.loading.MixtureOfDatasets):
         offline,
         initial_online_weight: float = 0.0,
         final_online_weight: float = 0.50,
-        start_epoch: int = 0,
-        end_epoch: int = 20,
+        start_epoch: int = 170,
+        end_epoch: int = 600,
         dset_name: str = "Online + Offline Mixture",
     ):
         super().__init__(
@@ -678,7 +678,7 @@ def build_online_mixture_dataset(
     start_ep = (
         online_anneal_start_epoch
         if online_anneal_start_epoch is not None
-        else 0
+        else 170
     )
     end_ep = (
         online_anneal_end_epoch
@@ -1125,16 +1125,7 @@ if __name__ == "__main__":
     elif args.mode == "validate":
         amago_dataset = amago.loading.DoNothingDataset()
     else:
-        start_epoch = args.online_anneal_start_epoch
-        if start_epoch is None and args.resume_training_state:
-            try:
-                start_epoch = (
-                    args.resume_epoch
-                    if args.resume_epoch is not None
-                    else _latest_training_state_epoch(args.save_dir, args.run_name)
-                )
-            except Exception:
-                start_epoch = None
+        start_epoch = args.online_anneal_start_epoch or 170
 
         amago_dataset = build_online_mixture_dataset(
             pretrained=pretrained,
@@ -1205,8 +1196,8 @@ if __name__ == "__main__":
             f"  Resuming full accelerate training state from epoch {resume_epoch} ..."
         )
         experiment.load_checkpoint(resume_epoch, resume_training_state=True)
-        if args.online_anneal_start_epoch is None and hasattr(experiment.dataset, "start_epoch"):
-            experiment.dataset.start_epoch = experiment.epoch
+        if hasattr(experiment.dataset, "start_epoch"):
+            experiment.dataset.start_epoch = 170
         if hasattr(experiment.dataset, "update_dset_weights"):
             experiment.dataset.update_dset_weights(experiment.epoch)
         print(
