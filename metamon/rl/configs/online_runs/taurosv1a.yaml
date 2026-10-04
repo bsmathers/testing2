@@ -18,8 +18,10 @@ train_team_set: hl_05_26
 val_pool: metamon/rl/configs/opponent_pools/taurosv1a_val.yaml
 val_team_set: hl_05_26
 
+dset_max_size: 150000
+initial_online_weight: 0.10
 online_weight: 0.50
-online_anneal_epochs: 10
+online_anneal_end_epoch: 600
 learning_rate: 1.0e-4
 lr_warmup_epochs: 15
 batch_size_per_gpu: 14

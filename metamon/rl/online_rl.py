@@ -68,6 +68,7 @@ from __future__ import annotations
 import os
 import copy
 import random
+import collections
 from functools import partial
 from typing import Optional
 
@@ -276,6 +277,24 @@ def add_cli(parser):
         help="Learner epochs to linearly ramp online FIFO sampling weight from 0 to "
         "--online_weight after the buffer becomes ready (also applies on restart when "
         "the buffer is already full).",
+    )
+    parser.add_argument(
+        "--initial_online_weight",
+        type=float,
+        default=None,
+        help="Initial sampling weight for the online FIFO buffer (ramps to --online_weight).",
+    )
+    parser.add_argument(
+        "--online_anneal_start_epoch",
+        type=int,
+        default=None,
+        help="Epoch at which linear ramp from initial_online_weight starts.",
+    )
+    parser.add_argument(
+        "--online_anneal_end_epoch",
+        type=int,
+        default=None,
+        help="Epoch at which linear ramp reaches --online_weight.",
     )
     parser.add_argument(
         "--stats_dropout_prob",
@@ -526,6 +545,64 @@ class StatsDropoutObservationSpace(ObservationSpace):
         return self.base_obs_space.state_to_obs(state)
 
 
+class OnlineMixtureOfDatasets(amago.loading.MixtureOfDatasets):
+    """Linear epoch-ramped mixture of online FIFO buffer and offline replay dataset."""
+
+    def __init__(
+        self,
+        fifo,
+        offline,
+        initial_online_weight: float = 0.0,
+        final_online_weight: float = 0.50,
+        start_epoch: int = 0,
+        end_epoch: int = 20,
+        dset_name: str = "Online + Offline Mixture",
+    ):
+        super().__init__(
+            datasets=[fifo, offline],
+            sampling_weights=[final_online_weight, 1.0 - final_online_weight],
+            dset_name=dset_name,
+        )
+        self.fifo = fifo
+        self.offline = offline
+        self.initial_online_weight = float(initial_online_weight)
+        self.final_online_weight = float(final_online_weight)
+        self.start_epoch = int(start_epoch)
+        self.end_epoch = int(end_epoch)
+
+    def configure_from_experiment(self, experiment):
+        amago.loading.RLDataset.configure_from_experiment(self, experiment)
+        for d in self.all_datasets:
+            d.configure_from_experiment(experiment)
+        self.update_dset_weights(getattr(experiment, "epoch", 0))
+        self._sampling_metrics = collections.defaultdict(int)
+
+    def update_dset_weights(self, epoch: int):
+        self.check_configured()
+        if self.end_epoch <= self.start_epoch:
+            curr_online = self.final_online_weight
+        elif epoch <= self.start_epoch:
+            curr_online = self.initial_online_weight
+        elif epoch >= self.end_epoch:
+            curr_online = self.final_online_weight
+        else:
+            progress = (epoch - self.start_epoch) / (self.end_epoch - self.start_epoch)
+            curr_online = self.initial_online_weight + progress * (
+                self.final_online_weight - self.initial_online_weight
+            )
+        curr_offline = max(1.0 - curr_online, 0.0)
+        self._available_datasets = [
+            (self.fifo, curr_online),
+            (self.offline, curr_offline),
+        ]
+        if getattr(getattr(self, "experiment", None), "accelerator", None) is not None:
+            if self.experiment.accelerator.is_main_process:
+                print(
+                    f"  [Online Dataset Mixture] Epoch {epoch}: online FIFO weight = {curr_online:.4f}, "
+                    f"offline weight = {curr_offline:.4f} (schedule: epochs {self.start_epoch} -> {self.end_epoch})"
+                )
+
+
 def build_online_mixture_dataset(
     *,
     pretrained,
@@ -538,6 +615,9 @@ def build_online_mixture_dataset(
     battle_format: str,
     reward_function,
     stats_dropout_prob: float = 0.0,
+    initial_online_weight: Optional[float] = None,
+    online_anneal_start_epoch: Optional[int] = None,
+    online_anneal_end_epoch: Optional[int] = None,
 ):
     """Offline replay mix + FIFO buffer of online-collected trajectories."""
     config = load_dataset_config(dataset_config_path)
@@ -578,14 +658,30 @@ def build_online_mixture_dataset(
     )
     if online_weight <= 0:
         return offline
-    # Always anneal online from 0 even when the FIFO is already full at startup.
-    # Without explicit initial_sampling_weights, AMAGO's legacy path sets
-    # initial_weight=final_weight for ready datasets and the ramp is a no-op.
-    return amago.loading.MixtureOfDatasets(
-        datasets=[fifo, offline],
-        sampling_weights=[online_weight, offline_weight],
-        initial_sampling_weights=[0.0, offline_weight],
-        smooth_sudden_starts=online_anneal_epochs,
+
+    init_online = (
+        initial_online_weight
+        if initial_online_weight is not None
+        else 0.0
+    )
+    start_ep = (
+        online_anneal_start_epoch
+        if online_anneal_start_epoch is not None
+        else 0
+    )
+    end_ep = (
+        online_anneal_end_epoch
+        if online_anneal_end_epoch is not None
+        else (start_ep + online_anneal_epochs)
+    )
+
+    return OnlineMixtureOfDatasets(
+        fifo=fifo,
+        offline=offline,
+        initial_online_weight=init_online,
+        final_online_weight=online_weight,
+        start_epoch=start_ep,
+        end_epoch=end_ep,
         dset_name="Online + Offline Mixture",
     )
 
@@ -1018,6 +1114,15 @@ if __name__ == "__main__":
     elif args.mode == "validate":
         amago_dataset = amago.loading.DoNothingDataset()
     else:
+        start_epoch = args.online_anneal_start_epoch
+        if start_epoch is None and args.resume_training_state:
+            try:
+                start_epoch = args.resume_epoch or _latest_training_state_epoch(
+                    args.save_dir, args.run_name
+                )
+            except Exception:
+                start_epoch = None
+
         amago_dataset = build_online_mixture_dataset(
             pretrained=pretrained,
             buffer_dir=args.buffer_dir,
@@ -1029,6 +1134,9 @@ if __name__ == "__main__":
             battle_format=battle_format,
             reward_function=reward_function,
             stats_dropout_prob=args.stats_dropout_prob,
+            initial_online_weight=args.initial_online_weight,
+            online_anneal_start_epoch=start_epoch,
+            online_anneal_end_epoch=args.online_anneal_end_epoch,
         )
 
     config_save_path = os.path.join(args.save_dir, args.run_name, "dataset_config.yaml")
