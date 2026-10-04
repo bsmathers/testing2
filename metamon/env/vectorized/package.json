@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@pkmn/data": "^0.10.11",
+    "@pkmn/engine": "^0.1.0-dev.78dc891c",
     "@pkmn/protocol": "^0.7.3",
     "@pkmn/sim": "^0.10.11",
     "@pkmn/view": "^0.7.3",

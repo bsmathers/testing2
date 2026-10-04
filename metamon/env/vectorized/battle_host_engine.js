@@ -98,8 +98,26 @@ function findEngineAddon() {
   return null;
 }
 
+function ensureCommonModule() {
+  const commonSrc = path.join(__dirname, "pkmn_engine_common.js");
+  if (!fs.existsSync(commonSrc)) return;
+  const targetDirs = [
+    path.join(__dirname, "node_modules", "@pkmn", "engine", "build", "pkg"),
+    path.join(__dirname, "node_modules", "@pkmn", "engine", "build", "lib"),
+  ];
+  for (const tDir of targetDirs) {
+    if (fs.existsSync(tDir)) {
+      const targetFile = path.join(tDir, "common.js");
+      if (!fs.existsSync(targetFile)) {
+        try { fs.copyFileSync(commonSrc, targetFile); } catch (_) {}
+      }
+    }
+  }
+}
+
 async function tryInitEngine() {
   try {
+    ensureCommonModule();
     pkmnEngine = require("@pkmn/engine");
     pkmnData = require("@pkmn/data");
     pkmnSim = require("@pkmn/sim");
@@ -110,9 +128,13 @@ async function tryInitEngine() {
       const gens = new pkmnData.Generations(pkmnSim.Dex);
       gen1 = gens.get(1);
       engineReady = true;
+      process.stderr.write(`[@pkmn/engine] HIGH-SPEED NATIVE ZIG ENGINE ACTIVE (addon: ${addonPath})\n`);
+    } else {
+      process.stderr.write(`[@pkmn/engine WARN] Addon not found (addonPath=${addonPath}). Falling back to slow Showdown.\n`);
     }
   } catch (err) {
     engineReady = false;
+    process.stderr.write(`[@pkmn/engine ERROR] Failed to initialize native engine: ${err.message}. Falling back to slow Showdown.\n`);
   }
 }
 

@@ -101,7 +101,13 @@ node src/bin/install-pkmn-engine --options="-Dshowdown -Dlog"
 # 4. Install npm dependencies in vectorized env
 echo "Setting up Node.js packages..."
 cd "${ROOT_DIR}/metamon/env/vectorized"
-npm install
+npm install --legacy-peer-deps
+npm install @pkmn/engine@dev --legacy-peer-deps || true
+
+if [ -f "${ROOT_DIR}/metamon/env/vectorized/pkmn_engine_common.js" ]; then
+    mkdir -p "${ROOT_DIR}/metamon/env/vectorized/node_modules/@pkmn/engine/build/pkg"
+    cp "${ROOT_DIR}/metamon/env/vectorized/pkmn_engine_common.js" "${ROOT_DIR}/metamon/env/vectorized/node_modules/@pkmn/engine/build/pkg/common.js"
+fi
 
 # 5. Link built addon into vectorized env
 if [ -f "${PKMN_DIR}/zig-out/lib/pkmn-showdown.node" ]; then

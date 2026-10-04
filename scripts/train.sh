@@ -39,8 +39,14 @@ export METAMON_ALLOW_ANY_POKE_ENV=1
 
 # Check for native @pkmn/engine Zig simulator
 if [ ! -f "${REPO_DIR}/metamon/env/vectorized/pkmn-showdown.node" ]; then
-    echo "[Info] Native Zig simulator not found. Attempting setup via scripts/setup_pkmn_engine.sh..."
-    bash "${SCRIPT_DIR}/setup_pkmn_engine.sh" 2>/dev/null || true
+    echo "[Info] Native Zig simulator not found. Running setup via scripts/setup_pkmn_engine.sh..."
+    bash "${SCRIPT_DIR}/setup_pkmn_engine.sh"
+fi
+
+# Ensure pkmn_engine_common.js is present in @pkmn/engine package
+if [ -f "${REPO_DIR}/metamon/env/vectorized/pkmn_engine_common.js" ]; then
+    mkdir -p "${REPO_DIR}/metamon/env/vectorized/node_modules/@pkmn/engine/build/pkg"
+    cp -f "${REPO_DIR}/metamon/env/vectorized/pkmn_engine_common.js" "${REPO_DIR}/metamon/env/vectorized/node_modules/@pkmn/engine/build/pkg/common.js" 2>/dev/null || true
 fi
 
 if [ -f "${REPO_DIR}/metamon/env/vectorized/pkmn-showdown.node" ]; then
@@ -140,6 +146,10 @@ if ! kill -0 "${COLLECTOR_PID}" 2>/dev/null; then
     cat "${COLLECTOR_LOG}"
     exit 1
 fi
+
+if grep -q "HIGH-SPEED NATIVE ZIG ENGINE ACTIVE" "${COLLECTOR_LOG}" 2>/dev/null; then
+    echo "      [Engine Verified] High-speed native Zig @pkmn/engine is ACTIVE!"
+fi
 echo "      Collector is running healthily! Log: ${COLLECTOR_LOG}"
 
 # Step 4: Background Buffer Rate Monitor
@@ -162,13 +172,15 @@ echo "      Collector is running healthily! Log: ${COLLECTOR_LOG}"
 ) &
 MONITOR_PID=$!
 
-# Step 5: Launch the Learner on GPU in foreground
+# Step 5: Launch the Learner on GPU in foreground (and log to logs/learner.log)
+LEARNER_LOG="${LOG_DIR}/learner.log"
 echo "[4/4] Starting Learner on GPU (RTX 5090)..."
 echo "============================================================"
 echo " Parallel Online RL is active!"
 echo " - Learner training progress is live below."
-echo " - Buffer monitor reports production rate every 30s."
+echo " - Learner log:   tail -f ${LEARNER_LOG}"
 echo " - Collector log: tail -f ${COLLECTOR_LOG}"
+echo " - Buffer monitor reports production rate every 30s."
 echo " - Press Ctrl+C at any time to stop both processes cleanly."
 echo "============================================================"
 echo ""
@@ -178,7 +190,7 @@ echo ""
     --mode learn \
     --save_dir "${SAVE_DIR}" \
     --buffer_dir "${BUFFER_DIR}" \
-    "${EXTRA_ARGS[@]}" &
+    "${EXTRA_ARGS[@]}" 2>&1 | tee "${LEARNER_LOG}" &
 LEARNER_PID=$!
 
 wait "${LEARNER_PID}"
