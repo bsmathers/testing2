@@ -935,11 +935,13 @@ if __name__ == "__main__":
             "--from_scratch cannot be combined with --prev_run_dir "
             "(continuation resumes saved weights, which contradicts random init)."
         )
-    if args.resume_training_state and (args.from_scratch or is_continuation):
-        raise ValueError(
-            "--resume_training_state resumes THIS run's full accelerate state and is "
-            "incompatible with --from_scratch and --prev_run_dir."
-        )
+    if args.resume_training_state:
+        args.from_scratch = False
+        if is_continuation:
+            raise ValueError(
+                "--resume_training_state resumes THIS run's full accelerate state and is "
+                "incompatible with --prev_run_dir."
+            )
     if args.resume_training_state:
         print(
             f"  Online RL (resume state): {args.run_name}  →  continue to "
