@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from pathlib import Path
 import warnings
 from typing import Optional, Type
@@ -261,6 +262,11 @@ class PretrainedModel:
         # checkpoint == 0 means "untrained base, skip load"; any non-zero value
         # (including the LATEST_CHECKPOINT sentinel) loads weights from disk.
         if checkpoint != 0:
+            if not os.path.exists(ckpt_path):
+                raise FileNotFoundError(
+                    f"Checkpoint file does not exist: {ckpt_path}. "
+                    f"Check that METAMON_SAVE_DIR is set or run from the repository root."
+                )
             ckpt_state = None
             for _attempt in range(10):
                 try:
@@ -1726,11 +1732,21 @@ class TaurosV1A(LocalPretrainedModel):
     """
 
     def __init__(self, amago_ckpt_dir: Optional[str] = None):
+        repo_checkpoints = str(Path(__file__).resolve().parents[2] / "checkpoints")
+        cwd_checkpoints = os.path.abspath("checkpoints")
+        parent_checkpoints = os.path.abspath(os.path.join("..", "checkpoints"))
+
+        fallback_dir = repo_checkpoints
+        if os.path.isdir(cwd_checkpoints):
+            fallback_dir = cwd_checkpoints
+        elif os.path.isdir(parent_checkpoints):
+            fallback_dir = parent_checkpoints
+
         ckpt_dir = (
             amago_ckpt_dir
             or os.environ.get("TAUROSV1A_SAVE_DIR")
             or os.environ.get("METAMON_SAVE_DIR")
-            or os.path.abspath("checkpoints")
+            or fallback_dir
         )
         super().__init__(
             amago_ckpt_dir=ckpt_dir,
