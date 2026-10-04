@@ -1,9 +1,9 @@
 # Online RL recipe for TaurosV1A (gen1ou)
 #
 # Exact TaurosV1 architecture (grouped_v2_medium.gin, ~35M parameters)
-# Trained from random initialization (--from_scratch) for 1500 epochs.
+# Trained from random initialization (--from_scratch) for 2500 epochs.
 # Opponent pool matches TaurosV1 (hl_gen1ou_mediumg1) minus the SmallG1Online models,
-# plus self-checkpoints after epoch 100.
+# plus rolling offset self-play ladder after epoch 400.
 
 run_name: taurosv1a
 base_model: TaurosV1A
@@ -26,7 +26,7 @@ online_anneal_end_epoch: 600
 learning_rate: 1.0e-4
 lr_warmup_epochs: 15
 batch_size_per_gpu: 14
-epochs: 1500
+epochs: 2000
 steps_per_epoch: 1000
 ckpt_interval: 10
 

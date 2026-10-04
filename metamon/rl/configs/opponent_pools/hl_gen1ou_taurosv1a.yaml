@@ -1,21 +1,22 @@
 # Training opponent pool for TaurosV1A (gen1ou).
 #
-# Composed exclusively of public Hugging Face pretrained models + evolving self-checkpoints.
+# Composed of public Hugging Face pretrained models + multi-scale self-play checkpoint ladder.
 # Contains NO local-only SmallG1Online models.
 #
-# 1. STATIC ROSTER (public Hugging Face models):
-#    - TaurosV0 (top gen1ou offline 50M model)
-#    - Kakuna
-#    - Alakazam
-#    - SyntheticRLV2
-#    - SyntheticRLV1
-#    - V2AGroupedV2DataAblation
-#    - Superkazam
-#    - Kadabra3
+# 1. STATIC ROSTER (18 rows total):
+#    - TaurosV0: 5 rows (~19-22% benchmark anchor)
+#    - Kakuna: 3 rows (~11-13%)
+#    - Alakazam: 2 rows
+#    - SyntheticRLV2: 2 rows
+#    - SyntheticRLV1: 1 row
+#    - V2AGroupedV2DataAblation: 2 rows
+#    - Superkazam: 2 rows
+#    - Kadabra3: 1 row
 #
-# 2. EVOLVING SELF-CHECKPOINTS:
-#    - Discovers TaurosV1A saved epochs + rolling latest/policy.pt
-#    - Activated once min_epoch (300) is reached, recency-weighted.
+# 2. EVOLVING SELF-PLAY LADDER (5 to 9 rows, ~22% to 33% of matches):
+#    - Updated every 20 epochs at epoch T: [T-20, T-50, T-100, T-150, T-200, T-300, T-400, T-500, T-600]
+#    - Checkpoints < 400 are ignored (ramps from 5 models at epoch 670 to 9 models at epoch 1000+)
+#    - Each active historical checkpoint has 1 row (uniform representation across the historical ladder)
 
 defaults:
   team_set: hl_05_26
@@ -25,23 +26,26 @@ defaults:
   num_agents: 1
 
 agents:
-  # ---- Static public HF roster ----
+  # ---- Static public HF roster (18 rows) ----
   TaurosV0:
     model_name: TaurosV0
-    num_agents: 2
+    num_agents: 5
+    # default ckpt 62; verify epochs exist on HF / adjust
     checkpoints: "range(50, 63, 2)"
 
   Kakuna:
     model_name: Kakuna
-    num_agents: 2
+    num_agents: 3
     checkpoints: "range(24, 35, 2)"
 
   Alakazam:
     model_name: Alakazam
+    num_agents: 2
     checkpoints: "range(2, 9, 2)"
 
   SyntheticRLV2:
     model_name: SyntheticRLV2
+    num_agents: 2
     checkpoints: "range(36, 49, 2)"
 
   SyntheticRLV1:
@@ -51,22 +55,30 @@ agents:
 
   V2ADataAblation:
     model_name: V2AGroupedV2DataAblation
+    num_agents: 2
     checkpoints: "range(74, 91, 2)"
 
   Superkazam:
     model_name: Superkazam
+    num_agents: 2
     checkpoints: "range(38, 51, 2)"
 
   Kadabra3:
     model_name: Kadabra3
+    num_agents: 1
     checkpoints: "range(10, 21, 2)"
 
-  # ---- Evolving self-checkpoints ----
+  # ---- Evolving self-checkpoints (multi-scale offset ladder) ----
   TaurosSelf:
     model_name: TaurosV1A
     checkpoints:
       discover: true
-      include_latest: true
-      min_epoch: 300
-      recency_rho: 1.5
-      total_num_agents: 9
+      include_latest: false
+      min_epoch: 400
+      anchor_epoch: 680
+      update_interval: 20
+      offsets: [20, 50, 100, 150, 200, 300, 400, 500, 600]
+      uniform_agents: true
+      num_agents_per_checkpoint: 1
+      fill_missing_model: TaurosV0
+      max_fill_missing: 2

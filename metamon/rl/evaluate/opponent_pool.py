@@ -33,6 +33,9 @@ def _discover_checkpoints(
     min_epoch: Optional[int],
     max_epoch: Optional[int],
     step: Optional[int],
+    offsets: Optional[List[int]] = None,
+    update_interval: Optional[int] = None,
+    anchor_epoch: Optional[int] = None,
 ) -> List[int]:
     """List a local model's saved epochs (oldest→newest), optionally + ``-1`` latest.
 
@@ -53,21 +56,53 @@ def _discover_checkpoints(
     if not ckpt_dir:
         return []
 
-    epochs: List[int] = []
+    all_epochs: List[int] = []
     for path in glob.glob(
         os.path.join(ckpt_dir, "policy_weights", "policy_epoch_*.pt")
     ):
         m = _EPOCH_RE.search(os.path.basename(path))
         if m:
-            epochs.append(int(m.group(1)))
-    epochs = sorted(set(epochs))
-    if min_epoch is not None:
-        epochs = [e for e in epochs if e >= min_epoch]
-    if max_epoch is not None:
-        epochs = [e for e in epochs if e <= max_epoch]
-    if step and int(step) > 1:
-        # Subsample from the newest end so the most recent epochs are always kept.
-        epochs = epochs[::-1][:: int(step)][::-1]
+            all_epochs.append(int(m.group(1)))
+    all_epochs = sorted(set(all_epochs))
+    if not all_epochs:
+        return []
+
+    if offsets:
+        latest_epoch = max(all_epochs)
+        interval = int(update_interval) if update_interval else 20
+        anchor = int(anchor_epoch) if anchor_epoch is not None else all_epochs[-1]
+        if latest_epoch < anchor:
+            T = latest_epoch
+        else:
+            T = anchor + ((latest_epoch - anchor) // interval) * interval
+
+        targets: List[int] = []
+        for offset in offsets:
+            target_epoch = T - int(offset)
+            if min_epoch is not None and target_epoch < min_epoch:
+                continue
+            if max_epoch is not None and target_epoch > max_epoch:
+                continue
+            if target_epoch in all_epochs:
+                targets.append(target_epoch)
+            else:
+                candidates = [
+                    e
+                    for e in all_epochs
+                    if e <= target_epoch and (min_epoch is None or e >= min_epoch)
+                ]
+                if candidates:
+                    targets.append(candidates[-1])
+        epochs = sorted(set(targets))
+    else:
+        epochs = all_epochs
+        if min_epoch is not None:
+            epochs = [e for e in epochs if e >= min_epoch]
+        if max_epoch is not None:
+            epochs = [e for e in epochs if e <= max_epoch]
+        if step and int(step) > 1:
+            # Subsample from the newest end so the most recent epochs are always kept.
+            epochs = epochs[::-1][:: int(step)][::-1]
 
     result: List[int] = list(epochs)
     if include_latest and (min_epoch is None or (epochs and max(epochs) >= min_epoch)):
@@ -112,19 +147,27 @@ def _expand_discover_agent(
     include_latest = bool(spec.get("include_latest", False))
     rho = float(spec.get("recency_rho", 1.5))
     total = spec.get("total_num_agents", None)
+    offsets = spec.get("offsets")
     discovered = _discover_checkpoints(
         model_name,
         include_latest=include_latest,
         min_epoch=spec.get("min_epoch"),
         max_epoch=spec.get("max_epoch"),
         step=spec.get("step"),
+        offsets=offsets,
+        update_interval=spec.get("update_interval", 20),
+        anchor_epoch=spec.get("anchor_epoch"),
     )
     if not discovered:
         return []
 
-    counts = _recency_num_agents(
-        len(discovered), rho, int(total) if total is not None else None
-    )
+    if offsets is not None and spec.get("uniform_agents", True):
+        num_per_ckpt = int(spec.get("num_agents_per_checkpoint", 1))
+        counts = [num_per_ckpt] * len(discovered)
+    else:
+        counts = _recency_num_agents(
+            len(discovered), rho, int(total) if total is not None else None
+        )
     rows: List[Tuple[str, dict]] = []
     for ckpt, n in zip(discovered, counts):
         label = "latest" if ckpt == LATEST_CHECKPOINT else str(ckpt)
@@ -132,6 +175,21 @@ def _expand_discover_agent(
         row_merged["checkpoints"] = [ckpt]
         row_merged["num_agents"] = n
         rows.extend(expand_agent_pool_entries(f"{base_name}_ckpt{label}", row_merged))
+
+    fill_model = spec.get("fill_missing_model")
+    max_fill = int(spec.get("max_fill_missing", 0))
+    if offsets and fill_model and max_fill > 0:
+        missing = max(0, len(offsets) - len(discovered))
+        n_fill = min(max_fill, missing)
+        if n_fill > 0:
+            fill_merged = dict(merged)
+            fill_merged["model_name"] = fill_model
+            fill_merged["checkpoints"] = spec.get(
+                "fill_checkpoints", "range(50, 63, 2)"
+            )
+            fill_merged["num_agents"] = n_fill
+            rows.extend(expand_agent_pool_entries(f"{fill_model}_fill", fill_merged))
+
     return rows
 
 
@@ -254,6 +312,12 @@ class OpponentPoolConfig:
         rows: List[Tuple[str, dict]] = []
         for base_name, merged, spec in self.discover_specs:
             rows.extend(_expand_discover_agent(base_name, merged, spec))
+        if rows != self._discovered_rows and rows:
+            labels = [r[0] for r in rows]
+            print(
+                f"  [OpponentPool] Discovered self-play checkpoints updated ({len(rows)} rows): {labels}",
+                flush=True,
+            )
         self._discovered_rows = rows
         self._discover_next_refresh = now + self._discover_refresh_seconds
 
