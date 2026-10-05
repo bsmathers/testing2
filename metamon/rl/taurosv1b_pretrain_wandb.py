@@ -1,8 +1,9 @@
 """W&B wrapper for TaurosV1B phases A-D.
 
 This intentionally leaves ``taurosv1b_pretrain`` optimization semantics untouched.
-It launches the existing trainer as a child process, mirrors stdout/stderr to the
-terminal, parses its once-per-epoch summaries, and records them to Weights & Biases.
+It launches the throughput/progress shim as a child process, mirrors stdout to the
+terminal, lets tqdm stderr pass through live, parses once-per-epoch summaries, and
+records them to Weights & Biases.
 
 A-D are stage-resumable rather than mid-stage-resumable. Therefore each retry is
 logged as a new W&B run (under the same experiment group) instead of attempting to
@@ -110,7 +111,7 @@ def main() -> None:
             "phase": phase,
             "phase_epochs": _PHASE_EPOCHS[phase],
             "global_epoch_offset": _PHASE_OFFSETS[phase],
-            "trainer_module": "metamon.rl.taurosv1b_pretrain",
+            "trainer_module": "metamon.rl.taurosv1b_pretrain_accel",
         },
     )
     wandb.define_metric("pretrain/global_epoch")
@@ -122,7 +123,7 @@ def main() -> None:
         sys.executable,
         "-u",
         "-m",
-        "metamon.rl.taurosv1b_pretrain",
+        "metamon.rl.taurosv1b_pretrain_accel",
         "--phase",
         phase,
         *forwarded,
@@ -132,7 +133,9 @@ def main() -> None:
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        # tqdm writes to stderr. Inherit it rather than folding it into the
+        # line-oriented stdout parser, so the progress bar updates live.
+        stderr=None,
         text=True,
         bufsize=1,
     )

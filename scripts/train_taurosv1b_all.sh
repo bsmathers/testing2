@@ -20,6 +20,13 @@ set -euo pipefail
 #     crashed online learner resumes the same W&B run rather than creating a duplicate.
 #   - Set METAMON_WANDB_PROJECT / METAMON_WANDB_ENTITY / WANDB_MODE as desired.
 #
+# A-D throughput:
+#   - replay decode/collation uses parallel persistent DataLoader workers;
+#   - each learner epoch has a live minibatch progress bar;
+#   - PRETRAIN_BATCH_SIZE is left at the original 8 by default so this throughput
+#     change does not silently alter the optimization recipe. It can be raised
+#     explicitly after checking VRAM headroom.
+#
 # Phase-F replay retention:
 #   - training FIFO stays at 150k (the recipe is unchanged);
 #   - a separate archive retains up to 2M completed phase-F replays;
@@ -36,6 +43,8 @@ set -euo pipefail
 #   METAMON_WANDB_PROJECT=taurosv1b
 #   WANDB_MODE=online        # or offline / disabled
 #   DAGGER_GAMES=75000
+#   PRETRAIN_BATCH_SIZE=8
+#   PRETRAIN_DLOADER_WORKERS=8
 #   LANES=128
 #   N_WORKERS=30
 #   PHASE_F_ARCHIVE_DIR=/fast/nvme/v1b/phase_f_replay_archive
@@ -52,6 +61,20 @@ STAGE_DIR="${WORK_DIR}/stages"
 DAGGER_GAMES="${DAGGER_GAMES:-75000}"
 F_ARCHIVE_DIR="${PHASE_F_ARCHIVE_DIR:-${WORK_DIR}/phase_f_replay_archive}"
 F_ARCHIVE_MAX="${PHASE_F_ARCHIVE_MAX:-2000000}"
+
+CPU_COUNT=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+DEFAULT_PRETRAIN_WORKERS=$((CPU_COUNT / 2))
+if [ "${DEFAULT_PRETRAIN_WORKERS}" -lt 1 ]; then
+  DEFAULT_PRETRAIN_WORKERS=1
+elif [ "${DEFAULT_PRETRAIN_WORKERS}" -gt 8 ]; then
+  DEFAULT_PRETRAIN_WORKERS=8
+fi
+PRETRAIN_BATCH_SIZE="${PRETRAIN_BATCH_SIZE:-8}"
+PRETRAIN_DLOADER_WORKERS="${PRETRAIN_DLOADER_WORKERS:-${DEFAULT_PRETRAIN_WORKERS}}"
+PRETRAIN_ARGS=(
+  --batch_size "${PRETRAIN_BATCH_SIZE}"
+  --dloader_workers "${PRETRAIN_DLOADER_WORKERS}"
+)
 
 mkdir -p \
   "${WORK_DIR}" \
@@ -123,11 +146,13 @@ if [ ! -f "${REPO_DIR}/metamon/env/vectorized/pkmn-showdown.node" ] \
 fi
 
 cd "${REPO_DIR}"
+echo "A-D pretraining loader: batch=${PRETRAIN_BATCH_SIZE}, workers=${PRETRAIN_DLOADER_WORKERS}"
 
 stage "A — 150 epochs V0 policy distillation"
 run_if_missing "${PHASE_A}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase a \
+    "${PRETRAIN_ARGS[@]}" \
     --output_weights "${PHASE_A}"
 
 stage "DAgger round 1 — ${DAGGER_GAMES} student-occupancy battles"
@@ -145,6 +170,7 @@ stage "B1 — 50 epochs public + DAgger-1 distillation"
 run_if_missing "${PHASE_B1}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase b1 \
+    "${PRETRAIN_ARGS[@]}" \
     --input_weights "${PHASE_A}" \
     --dagger1_dir "${DAGGER1_DIR}" \
     --output_weights "${PHASE_B1}"
@@ -164,6 +190,7 @@ stage "B2 — 50 epochs public + both DAgger piles"
 run_if_missing "${PHASE_B2}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase b2 \
+    "${PRETRAIN_ARGS[@]}" \
     --input_weights "${PHASE_B1}" \
     --dagger1_dir "${DAGGER1_DIR}" \
     --dagger2_dir "${DAGGER2_DIR}" \
@@ -173,6 +200,7 @@ stage "C — 50 epochs critic-only warmup"
 run_if_missing "${PHASE_C}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase c \
+    "${PRETRAIN_ARGS[@]}" \
     --input_weights "${PHASE_B2}" \
     --dagger1_dir "${DAGGER1_DIR}" \
     --dagger2_dir "${DAGGER2_DIR}" \
@@ -182,6 +210,7 @@ stage "D — 25 epochs shared-representation critic/KL bridge"
 run_if_missing "${PHASE_D}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase d \
+    "${PRETRAIN_ARGS[@]}" \
     --input_weights "${PHASE_C}" \
     --dagger1_dir "${DAGGER1_DIR}" \
     --dagger2_dir "${DAGGER2_DIR}" \
