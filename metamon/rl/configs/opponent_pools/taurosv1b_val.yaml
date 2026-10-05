@@ -1,0 +1,32 @@
+# Frozen multi-opponent validation pool for TaurosV1B.
+#
+# Keep checkpoint selection independent of the training mixture. Each row is one
+# deterministic-strength anchor (temperature 1.0); validation samples uniformly
+# across these rows. Use a held-out POV team set in the run config.
+defaults:
+  team_set: hl_05_26
+  battle_backend: metamon
+  checkpoints: [null]
+  temperatures: [1.0]
+  num_agents: 1
+
+agents:
+  TaurosV0:
+    model_name: TaurosV0
+    checkpoints: [62]
+
+  Kakuna:
+    model_name: Kakuna
+    checkpoints: [34]
+
+  V2ADataAblation:
+    model_name: V2AGroupedV2DataAblation
+    checkpoints: [90]
+
+  SyntheticRLV2:
+    model_name: SyntheticRLV2
+    checkpoints: [48]
+
+  Superkazam:
+    model_name: Superkazam
+    checkpoints: [50]

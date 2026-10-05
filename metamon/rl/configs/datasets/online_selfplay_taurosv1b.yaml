@@ -1,0 +1,18 @@
+# Public-only offline mixture for TaurosV1B distillation/online RL.
+#
+# Start from the TaurosV1 offline recipe and remove the unavailable 30% SmallG1Online
+# slice, then renormalize the remaining weights by 1 / 0.70:
+#   replay           0.05 / 0.70 = 0.0714286
+#   pac-base         0.20 / 0.70 = 0.2857143
+#   pac-exploratory  0.20 / 0.70 = 0.2857143
+#   pac-tauros       0.25 / 0.70 = 0.3571428
+#
+# Phases A-D use this as the public state distribution.  Phases E/F mix the same
+# block with the audited online FIFO in taurosv1b_online.py.
+replay_weight: 0.0714286
+self_play:
+  pac-base: 0.2857143
+  pac-exploratory: 0.2857143
+  pac-tauros: 0.3571428
+formats:
+  - gen1ou

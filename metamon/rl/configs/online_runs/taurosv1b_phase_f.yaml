@@ -1,0 +1,46 @@
+# TaurosV1B phase F: 800 epochs of refinement with gated self-play.
+#
+# Start this only after selecting a phase-E checkpoint that is at least TaurosV0
+# parity on the frozen external H2H matrix.  Load that checkpoint with
+# --base_weights (or --prev_run_dir/--prev_run_name/--prev_checkpoint).
+
+run_name: taurosv1b_phase_f
+base_model: TaurosV1A
+battle_format: gen1ou
+
+dataset_config: online_selfplay_taurosv1b.yaml
+train_gin_config: grouped_v2_large_robust_awr_beta3.gin
+train_pool: metamon/rl/configs/opponent_pools/hl_gen1ou_taurosv1b_selfplay.yaml
+train_team_set: metamon/rl/configs/team_sets/mediumg1_train.yaml
+
+val_pool: metamon/rl/configs/opponent_pools/taurosv1b_val.yaml
+val_team_set: modern_replays_v2
+
+dset_max_size: 150000
+dset_min_size: 5000
+initial_online_weight: 0.60
+online_weight: 0.60
+online_anneal_start_epoch: 0
+online_anneal_end_epoch: 0
+
+learning_rate: 3.0e-5
+lr_warmup_epochs: 5
+batch_size_per_gpu: 14
+grad_accum: 1
+epochs: 800
+steps_per_epoch: 1000
+
+# Fire the monitored checkpoint hook every 5 epochs.  The hook retains raw
+# policies only every 25 and full optimizer/RNG state only every 100.
+ckpt_interval: 5
+full_state_ckpt_interval: 100
+mixed_precision: "no"
+
+lanes: 128
+n_workers: 8
+train_timesteps_per_epoch: 500
+temp_low: 1.0
+temp_high: 2.25
+
+val_timesteps: 2000
+val_interval: 10

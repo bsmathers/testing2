@@ -1,0 +1,59 @@
+# TaurosV1B phase E: 800 epochs of public-only online RL after A-D distillation.
+#
+# Launch with the audited runner, NOT metamon.rl.online_rl:
+#   python -m metamon.rl.taurosv1b_online \
+#     --run_config metamon/rl/configs/online_runs/taurosv1b.yaml \
+#     --mode learn --save_dir ... --buffer_dir ... \
+#     --base_weights /path/to/v1b_phase_d.pt
+#
+# The base_model supplies only the exact V1/V1A 35M architecture/spaces.  Its
+# checkpoint is not the initialization: --base_weights must be the output of
+# taurosv1b_pretrain phase D.
+
+run_name: taurosv1b_phase_e
+base_model: TaurosV1A
+battle_format: gen1ou
+
+dataset_config: online_selfplay_taurosv1b.yaml
+train_gin_config: grouped_v2_large_robust_awr_beta2.gin
+train_pool: metamon/rl/configs/opponent_pools/hl_gen1ou_taurosv1b.yaml
+train_team_set: metamon/rl/configs/team_sets/mediumg1_train.yaml
+
+# modern_replays_v2 is genuinely outside the mediumg1_train team sets; unlike
+# expert_curated, it is not a seed subset of expert_curated2.
+val_pool: metamon/rl/configs/opponent_pools/taurosv1b_val.yaml
+val_team_set: modern_replays_v2
+
+# Buffer is never sampled before dset_min_size is satisfied.  When prefilled,
+# online share follows 20% -> 60% over epochs 0..400, then stays at 60%.
+dset_max_size: 150000
+dset_min_size: 5000
+initial_online_weight: 0.20
+online_weight: 0.60
+online_anneal_start_epoch: 0
+online_anneal_end_epoch: 400
+
+learning_rate: 5.0e-5
+lr_warmup_epochs: 5
+batch_size_per_gpu: 14
+grad_accum: 1
+epochs: 800
+steps_per_epoch: 1000
+
+# The callback fires every 5 epochs so the in-memory model can play a 50-game
+# tournament against TaurosV0@62 and log the win rate.  The V1B checkpoint hook
+# still persists raw policies only every 25 epochs and full states every 100.
+ckpt_interval: 5
+full_state_ckpt_interval: 100
+mixed_precision: "no"
+
+lanes: 128
+n_workers: 8
+train_timesteps_per_epoch: 500
+temp_low: 1.0
+temp_high: 2.25
+
+# Health-check validator only; checkpoint selection should use explicit balanced
+# H2H sweeps.  This is environment timesteps per lane, not a game count.
+val_timesteps: 2000
+val_interval: 10
