@@ -9,9 +9,10 @@ set -euo pipefail
 # uses a fixed eta=1e-5 for all 150 epochs.  Its output is the actor used by
 # the 400-game TaurosV0@62 tournament and by DAgger-1.
 #
-# DAgger collection is sharded across independent CPU-bound collectors because
-# a single collector is coordinator-bound in Python.  Shards are resumable and
-# are invalidated automatically if the source actor/config changes.
+# DAgger collection is sharded across a small number of GPU-backed collectors
+# because a single collector is coordinator-bound in Python. TaurosV1A uses
+# FlashAttention, so CUDA must remain visible. Shards are resumable and are
+# invalidated automatically if the source actor/config changes.
 #
 # Typical use:
 #   bash scripts/train_taurosv1b_all.sh
@@ -23,7 +24,7 @@ set -euo pipefail
 #   METAMON_WANDB_PROJECT=taurosv1b
 #   WANDB_MODE=online
 #   DAGGER_GAMES=75000
-#   DAGGER_SHARDS=16
+#   DAGGER_SHARDS=4
 #   DAGGER_LANES_PER_SHARD=16
 #   DAGGER_WORKERS_PER_SHARD=1
 #   PRETRAIN_BATCH_SIZE=8
@@ -57,11 +58,9 @@ PRETRAIN_ARGS=(
   --dloader_workers "${PRETRAIN_DLOADER_WORKERS}"
 )
 
-DEFAULT_DAGGER_SHARDS=$((CPU_COUNT * 2 / 3))
+DEFAULT_DAGGER_SHARDS=$((CPU_COUNT < 4 ? CPU_COUNT : 4))
 if [ "${DEFAULT_DAGGER_SHARDS}" -lt 1 ]; then
   DEFAULT_DAGGER_SHARDS=1
-elif [ "${DEFAULT_DAGGER_SHARDS}" -gt 16 ]; then
-  DEFAULT_DAGGER_SHARDS=16
 fi
 DAGGER_SHARDS="${DAGGER_SHARDS:-${DEFAULT_DAGGER_SHARDS}}"
 DAGGER_LANES_PER_SHARD="${DAGGER_LANES_PER_SHARD:-16}"
