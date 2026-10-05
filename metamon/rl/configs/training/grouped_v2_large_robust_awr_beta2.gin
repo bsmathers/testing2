@@ -1,5 +1,6 @@
 import amago.agent
 import metamon.rl.taurosv1b_filter
+import metamon.rl.taurosv1b_tournament
 
 # TaurosV1B phase-E objective.  This is normalized exponential AWR/CRR-style
 # regression, not behavior-policy importance sampling: no delta_log is injected.
