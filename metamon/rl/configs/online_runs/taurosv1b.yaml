@@ -1,0 +1,53 @@
+# TaurosV1B: public-only TaurosV0 warm-start experiment (gen1ou).
+#
+# Motivation: TaurosV1A's public cold-start models have not surpassed TaurosV0.
+# Rather than train another medium GroupedV2 policy from scratch, V1B preserves
+# TaurosV0's demonstrated competence and asks whether a broader public curriculum
+# plus fresh online data can improve it.
+#
+# This is phase 1. It intentionally excludes V1A/V1B self-play until V1B beats the
+# TaurosV0 anchor robustly; otherwise self-play would feed a weaker lineage back
+# into the learner. A follow-up phase can add recency-weighted V1B checkpoints.
+
+run_name: taurosv1b
+base_model: TaurosV0
+base_checkpoint: 62
+battle_format: gen1ou
+
+dataset_config: online_selfplay_taurosv1b.yaml
+train_gin_config: grouped_v2_large_isfilter.gin
+train_pool: metamon/rl/configs/opponent_pools/hl_gen1ou_taurosv1b.yaml
+train_team_set: metamon/rl/configs/team_sets/mediumg1_train.yaml
+
+# Validation is intentionally broader than TaurosV1A's TaurosV0-only check and
+# uses a held-out trainee team set.
+val_pool: metamon/rl/configs/opponent_pools/taurosv1b_val.yaml
+val_team_set: expert_curated
+
+# TaurosV0 is already competent, so useful online data can enter immediately.
+# Keep a large offline anchor to reduce catastrophic drift from the parent.
+dset_max_size: 150000
+initial_online_weight: 0.35
+online_weight: 0.60
+online_anneal_start_epoch: 0
+online_anneal_end_epoch: 250
+
+# Conservative finetuning LR: V1B is refinement, not representation learning.
+learning_rate: 5.0e-5
+lr_warmup_epochs: 10
+batch_size_per_gpu: 14
+epochs: 1000
+steps_per_epoch: 1000
+ckpt_interval: 10
+
+# Collection: retain meaningful exploration, but avoid V1A's temperature-3 tail.
+lanes: 128
+n_workers: 8
+train_timesteps_per_epoch: 500
+temp_low: 1.0
+temp_high: 2.25
+
+# Validation is a sampled five-anchor matrix. Increase this for checkpoint
+# selection if compute permits; 5000 gives ~1000 games per anchor in expectation.
+val_timesteps: 5000
+val_interval: 10
