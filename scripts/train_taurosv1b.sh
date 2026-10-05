@@ -200,18 +200,26 @@ printf '\nFIFO ready. Starting learner.\n'
   "${LEARNER_EXTRA[@]}" > >(tee "${LEARNER_LOG}") 2>&1 &
 LEARNER_PID=$!
 
-# Wait for the learner, but fail the run if the requested phase-F archive dies.
 LEARNER_STATUS=0
-while kill -0 "${LEARNER_PID}" 2>/dev/null; do
-  if [ "${IS_PHASE_F}" -eq 1 ] && ! kill -0 "${ARCHIVER_PID}" 2>/dev/null; then
-    echo "Phase-F replay archiver exited unexpectedly during training. Last log lines:" >&2
-    tail -100 "${ARCHIVER_LOG}" >&2 || true
-    kill -TERM "${LEARNER_PID}" 2>/dev/null || true
-    LEARNER_STATUS=1
-    break
-  fi
-  sleep 30
-done
+if [ "${IS_PHASE_F}" -eq 1 ]; then
+  # Monitor archive health while F runs. A dead child that has not yet been
+  # waited can remain as a zombie for which `kill -0` still succeeds, so inspect
+  # process state as well and break as soon as the learner is gone/zombified.
+  while true; do
+    learner_state=$(ps -o stat= -p "${LEARNER_PID}" 2>/dev/null | awk '{print $1}' || true)
+    if [ -z "${learner_state}" ] || [[ "${learner_state}" == Z* ]]; then
+      break
+    fi
+    if ! kill -0 "${ARCHIVER_PID}" 2>/dev/null; then
+      echo "Phase-F replay archiver exited unexpectedly during training. Last log lines:" >&2
+      tail -100 "${ARCHIVER_LOG}" >&2 || true
+      kill -TERM "${LEARNER_PID}" 2>/dev/null || true
+      LEARNER_STATUS=1
+      break
+    fi
+    sleep 30
+  done
+fi
 
 set +e
 wait "${LEARNER_PID}"
