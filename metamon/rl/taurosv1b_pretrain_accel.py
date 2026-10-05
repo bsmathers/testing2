@@ -2,14 +2,15 @@
 
 This module deliberately does not reimplement the optimization. It imports the
 canonical :mod:`taurosv1b_pretrain` trainer, replaces only its dataset-configure
-hook and DataLoader factory, and then calls the original ``main()``. The shim:
+hook, DataLoader factory, and checkpoint writer, and then calls the original
+``main()``. The shim:
 
 * records the canonical ``steps_per_epoch`` value on the configured dataset;
 * uses persistent multiprocessing workers and prefetching when workers > 0;
 * pins host memory on CUDA, matching the original loader;
-* exposes one live tqdm bar per learner epoch; and
-* slices the iterator to exactly ``train_batches_per_epoch`` batches, avoiding the
-  original loop's otherwise-unused (N+1)-th fetched batch.
+* exposes one live tqdm bar per learner epoch;
+* slices the iterator to exactly ``train_batches_per_epoch`` batches; and
+* publishes A-D checkpoints atomically (temp file + ``os.replace``).
 
 All losses, optimizer/scheduler steps, target-network updates, and phase schedules
 remain in ``taurosv1b_pretrain.py`` unchanged.
@@ -18,6 +19,7 @@ remain in ``taurosv1b_pretrain.py`` unchanged.
 from __future__ import annotations
 
 import itertools
+import os
 
 import torch
 from amago.loading import RLData_pad_collate
@@ -39,8 +41,6 @@ class _EpochProgressLoader:
 
     def __iter__(self):
         self.epoch += 1
-        # islice prevents the outer trainer from requesting an unnecessary
-        # (steps_per_epoch + 1)-th batch before its existing break condition.
         batches = itertools.islice(iter(self.loader), self.steps_per_epoch)
         return iter(
             tqdm(
@@ -61,13 +61,7 @@ def _configure_dataset_with_steps(
     batch_size: int,
     max_seq_len: int,
 ):
-    """Run canonical dataset configuration and retain its epoch length explicitly.
-
-    AMAGO's ``configure_from_experiment`` consumes the lightweight experiment stub
-    but does not guarantee that the stub is retained as ``dataset.experiment``.
-    Recording the already-known value here avoids relying on that implementation
-    detail while leaving dataset configuration itself unchanged.
-    """
+    """Run canonical configuration and retain its epoch length explicitly."""
     configured = _ORIGINAL_CONFIGURE_DATASET(
         dataset,
         steps_per_epoch,
@@ -103,9 +97,26 @@ def _fast_loader(dataset, batch_size: int, workers: int):
     return _EpochProgressLoader(loader, steps_per_epoch)
 
 
+def _atomic_save(policy, path: str) -> None:
+    """Never expose a partial A-D checkpoint to the resumable shell pipeline."""
+    path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        torch.save(policy.state_dict(), tmp)
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.remove(tmp)
+        except FileNotFoundError:
+            pass
+    print(f"Saved: {path}")
+
+
 def main() -> None:
     core._configure_dataset = _configure_dataset_with_steps
     core._loader = _fast_loader
+    core._save = _atomic_save
     core.main()
 
 
