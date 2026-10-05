@@ -51,14 +51,6 @@ def main():
 
     import amago
     from metamon.env import get_metamon_teams, ChallengeByUsername
-
-    # TaurosV1B is intentionally registered in its dedicated online-RL module so
-    # historical pretrained.py behavior stays unchanged.  H2H workers are fresh
-    # subprocesses, so import that module explicitly before resolving the local
-    # model name.  The module has no training side effects on import.
-    if args.model_name == "TaurosV1B":
-        import metamon.rl.taurosv1b_online  # noqa: F401
-
     from metamon.rl.pretrained import get_pretrained_model
     from metamon.rl.metamon_to_amago import make_challenge_env
 
