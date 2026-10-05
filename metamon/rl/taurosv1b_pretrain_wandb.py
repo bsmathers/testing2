@@ -23,7 +23,9 @@ import wandb
 
 
 _PHASE_EPOCHS = {"a": 150, "b1": 50, "b2": 50, "c": 50, "d": 25}
-_PHASE_OFFSETS = {"a": 0, "b1": 150, "b2": 200, "c": 250, "d": 300}
+# Phase A is followed by a separate fixed-LR 150-epoch continuation logged by
+# taurosv1b_retrain_a_wandb, so downstream global epochs start at 300.
+_PHASE_OFFSETS = {"a": 0, "b1": 300, "b2": 350, "c": 400, "d": 450}
 
 _KD_RE = re.compile(
     r"^KD epoch\s+(?P<epoch>\d+)/(?P<total>\d+):\s+"
