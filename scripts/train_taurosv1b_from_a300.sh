@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# End-to-end TaurosV1B pipeline:
-#   A(150) -> A-fixed(150 @ 1e-5) -> 400-game V0 tournament
-#   -> DAgger1 -> B1 -> DAgger2 -> B2 -> C -> D -> E -> F
+# TaurosV1B continuation pipeline from an already-trained 300-epoch actor:
+#   phase_a_300.pt -> DAgger1 -> B1 -> DAgger2 -> B2 -> C -> D -> E -> F
 #
-# The second A pass intentionally resets optimizer state, disables warmup, and
-# uses a fixed eta=1e-5 for all 150 epochs.  Its output is the actor used by
-# the 400-game TaurosV0@62 tournament and by DAgger-1.
+# This script deliberately does not run either Phase-A training pass or the
+# actor tournament.  It requires PRETRAIN_DIR/phase_a_300.pt to exist.
 #
-# DAgger collection is sharded across a small number of GPU-backed collectors
-# because a single collector is coordinator-bound in Python. TaurosV1A uses
-# FlashAttention, so CUDA must remain visible. Shards are resumable and are
-# invalidated automatically if the source actor/config changes.
+# DAgger collection is sharded across a small number of independent GPU-backed
+# collectors. TaurosV1A uses FlashAttention, so CUDA must remain visible.
 #
 # Typical use:
-#   bash scripts/train_taurosv1b_all.sh
+#   bash scripts/train_taurosv1b_from_a300.sh
 #
 # Useful overrides:
 #   V1B_WORK_DIR=/fast/nvme/v1b
@@ -97,16 +93,13 @@ export V1B_EXPERIMENT_ID="${EXPERIMENT_ID}"
 
 mkdir -p "${METAMON_SAVE_DIR}" "${METAMON_CACHE_DIR}"
 
-PHASE_A_150="${PRETRAIN_DIR}/phase_a_150.pt"
 PHASE_A="${PRETRAIN_DIR}/phase_a_300.pt"
-PHASE_A_TOURNAMENT="${PRETRAIN_DIR}/phase_a_300_vs_taurosv0_400.json"
 PHASE_B1="${PRETRAIN_DIR}/phase_b1.pt"
 PHASE_B2="${PRETRAIN_DIR}/phase_b2.pt"
 PHASE_C="${PRETRAIN_DIR}/phase_c.pt"
 PHASE_D="${PRETRAIN_DIR}/phase_d.pt"
 PHASE_E_FINAL="${PRETRAIN_DIR}/phase_e_final.pt"
 PHASE_F_FINAL="${PRETRAIN_DIR}/phase_f_final.pt"
-LEGACY_PHASE_A="${PRETRAIN_DIR}/phase_a.pt"
 
 stage() {
   printf '\n\n============================================================\n'
@@ -139,32 +132,13 @@ cd "${REPO_DIR}"
 echo "A-D pretraining loader: batch=${PRETRAIN_BATCH_SIZE}, workers=${PRETRAIN_DLOADER_WORKERS}"
 echo "DAgger parallelism: shards=${DAGGER_SHARDS}, lanes/shard=${DAGGER_LANES_PER_SHARD}, workers/shard=${DAGGER_WORKERS_PER_SHARD}"
 
-# Migration for runs that completed the old single 150-epoch Phase A.  The old
-# canonical phase_a.pt is exactly the input needed by the new fixed-LR pass.
-if [ ! -s "${PHASE_A_150}" ] && [ -s "${LEGACY_PHASE_A}" ]; then
-  echo "[migrate] Preserving legacy Phase-A checkpoint as ${PHASE_A_150}"
-  cp -p "${LEGACY_PHASE_A}" "${PHASE_A_150}"
+if [ ! -s "${PHASE_A}" ]; then
+  echo "Missing required 300-epoch Phase-A checkpoint: ${PHASE_A}" >&2
+  echo "This continuation script intentionally does not retrain Phase A." >&2
+  exit 1
 fi
 
-stage "A — initial 150 epochs V0 policy distillation"
-run_if_missing "${PHASE_A_150}" \
-  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
-    --phase a \
-    "${PRETRAIN_ARGS[@]}" \
-    --output_weights "${PHASE_A_150}"
-
-stage "A-fixed — 150 more epochs at fixed eta=1e-5, no warmup"
-run_if_missing "${PHASE_A}" \
-  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_retrain_a_wandb \
-    "${PRETRAIN_ARGS[@]}" \
-    --input_weights "${PHASE_A_150}" \
-    --output_weights "${PHASE_A}"
-
-stage "A-fixed actor tournament — 400 games vs TaurosV0@62"
-"${PYTHON_BIN}" -m metamon.rl.taurosv1b_actor_tournament \
-  --weights "${PHASE_A}" \
-  --games 400 \
-  --output "${PHASE_A_TOURNAMENT}"
+echo "Starting downstream pipeline from: ${PHASE_A}"
 
 stage "DAgger round 1 — ${DAGGER_GAMES} student-occupancy battles (multicore)"
 "${PYTHON_BIN}" -m metamon.rl.taurosv1b_collect_dagger_parallel \
@@ -270,7 +244,6 @@ fi
 
 stage "complete"
 echo "Final TaurosV1B policy: ${PHASE_F_FINAL}"
-echo "Phase-A tournament:    ${PHASE_A_TOURNAMENT}"
 echo "Phase-F replay archive: ${F_ARCHIVE_DIR}/gen1ou (cap ${F_ARCHIVE_MAX})"
 echo "W&B project:       ${METAMON_WANDB_PROJECT}"
 echo "W&B group:         ${WANDB_RUN_GROUP}"
