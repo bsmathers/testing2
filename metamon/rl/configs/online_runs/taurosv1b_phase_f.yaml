@@ -29,7 +29,10 @@ batch_size_per_gpu: 14
 grad_accum: 1
 epochs: 800
 steps_per_epoch: 1000
-ckpt_interval: 25
+
+# Fire the monitored checkpoint hook every 5 epochs.  The hook retains raw
+# policies only every 25 and full optimizer/RNG state only every 100.
+ckpt_interval: 5
 full_state_ckpt_interval: 100
 mixed_precision: "no"
 
