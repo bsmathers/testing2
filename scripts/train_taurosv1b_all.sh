@@ -13,6 +13,8 @@ set -euo pipefail
 #   - E/F always launch with --log and therefore keep all standard AMAGO metrics.
 #   - Every 5 epochs (after epoch 0), E/F additionally run 50 games against
 #     TaurosV0@62 and log tournament/v0_62_win_rate to the same W&B run.
+#   - A persistent local experiment ID gives E and F stable W&B run IDs, so a
+#     crashed learner resumes the same W&B run rather than creating a duplicate.
 #   - Set METAMON_WANDB_PROJECT / METAMON_WANDB_ENTITY / WANDB_MODE as desired.
 #
 # Typical use:
@@ -38,23 +40,32 @@ DAGGER2_DIR="${WORK_DIR}/dagger2"
 STAGE_DIR="${WORK_DIR}/stages"
 DAGGER_GAMES="${DAGGER_GAMES:-75000}"
 
-export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
-export METAMON_SAVE_DIR="${METAMON_SAVE_DIR:-${WORK_DIR}/checkpoints}"
-export METAMON_CACHE_DIR="${METAMON_CACHE_DIR:-${HOME}/.cache/metamon}"
-export METAMON_ALLOW_ANY_POKE_ENV=1
-export METAMON_WANDB_PROJECT="${METAMON_WANDB_PROJECT:-taurosv1b}"
-# W&B honors WANDB_RUN_GROUP in wandb.init even though AMAGO owns initialization.
-export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-taurosv1b}"
-export WANDB_TAGS="${WANDB_TAGS:-taurosv1b,distilled-public}"
-
 mkdir -p \
   "${WORK_DIR}" \
   "${PRETRAIN_DIR}" \
   "${DAGGER1_DIR}/gen1ou" \
   "${DAGGER2_DIR}/gen1ou" \
-  "${STAGE_DIR}" \
-  "${METAMON_SAVE_DIR}" \
-  "${METAMON_CACHE_DIR}"
+  "${STAGE_DIR}"
+
+EXPERIMENT_ID_FILE="${WORK_DIR}/experiment_id.txt"
+if [ -n "${V1B_EXPERIMENT_ID:-}" ]; then
+  EXPERIMENT_ID="${V1B_EXPERIMENT_ID}"
+elif [ -s "${EXPERIMENT_ID_FILE}" ]; then
+  EXPERIMENT_ID="$(tr -d '[:space:]' < "${EXPERIMENT_ID_FILE}")"
+else
+  EXPERIMENT_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  printf '%s\n' "${EXPERIMENT_ID}" > "${EXPERIMENT_ID_FILE}"
+fi
+
+export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
+export METAMON_SAVE_DIR="${METAMON_SAVE_DIR:-${WORK_DIR}/checkpoints}"
+export METAMON_CACHE_DIR="${METAMON_CACHE_DIR:-${HOME}/.cache/metamon}"
+export METAMON_ALLOW_ANY_POKE_ENV=1
+export METAMON_WANDB_PROJECT="${METAMON_WANDB_PROJECT:-taurosv1b}"
+export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-taurosv1b-${EXPERIMENT_ID}}"
+export WANDB_TAGS="${WANDB_TAGS:-taurosv1b,distilled-public}"
+
+mkdir -p "${METAMON_SAVE_DIR}" "${METAMON_CACHE_DIR}"
 
 PHASE_A="${PRETRAIN_DIR}/phase_a.pt"
 PHASE_B1="${PRETRAIN_DIR}/phase_b1.pt"
@@ -166,6 +177,8 @@ stage "E — 800 epochs public-opponent online RL"
 if [ ! -f "${STAGE_DIR}/phase_e.done" ]; then
   BASE_WEIGHTS="${PHASE_D}" \
   BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_e" \
+  WANDB_RUN_ID="v1b-e-${EXPERIMENT_ID}" \
+  WANDB_RESUME=allow \
     bash "${SCRIPT_DIR}/train_taurosv1b.sh" e --log
 
   E_LATEST="${METAMON_SAVE_DIR}/taurosv1b_phase_e/ckpts/latest/policy.pt"
@@ -192,6 +205,8 @@ if [ ! -f "${STAGE_DIR}/phase_f.done" ]; then
 
   BASE_WEIGHTS="${PHASE_E_FINAL}" \
   BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_f" \
+  WANDB_RUN_ID="v1b-f-${EXPERIMENT_ID}" \
+  WANDB_RESUME=allow \
     bash "${SCRIPT_DIR}/train_taurosv1b.sh" f --log
 
   F_LATEST="${METAMON_SAVE_DIR}/taurosv1b_phase_f/ckpts/latest/policy.pt"
@@ -207,5 +222,6 @@ fi
 
 stage "complete"
 echo "Final TaurosV1B policy: ${PHASE_F_FINAL}"
-echo "W&B project: ${METAMON_WANDB_PROJECT}"
-echo "W&B group:   ${WANDB_RUN_GROUP}"
+echo "W&B project:       ${METAMON_WANDB_PROJECT}"
+echo "W&B group:         ${WANDB_RUN_GROUP}"
+echo "V1B experiment ID: ${EXPERIMENT_ID}"
