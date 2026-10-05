@@ -1,5 +1,5 @@
 import amago.agent
-import metamon.rl.taurosv1b_online
+import metamon.rl.taurosv1b_filter
 
 # TaurosV1B phase-E objective.  This is normalized exponential AWR/CRR-style
 # regression, not behavior-policy importance sampling: no delta_log is injected.
@@ -19,17 +19,17 @@ agent.MultiTaskAgent.online_coeff = 0.0
 agent.Agent.offline_coeff = 1.0
 agent.MultiTaskAgent.offline_coeff = 1.0
 
-agent.Agent.fbc_filter_func = @taurosv1b_online.RobustAdvantageFilter()
-agent.MultiTaskAgent.fbc_filter_func = @taurosv1b_online.RobustAdvantageFilter()
-taurosv1b_online.RobustAdvantageFilter.beta = 2.0
-taurosv1b_online.RobustAdvantageFilter.clip_weights_low = 1e-6
-taurosv1b_online.RobustAdvantageFilter.clip_weights_high = 100.
-taurosv1b_online.RobustAdvantageFilter.seq_p_low = 0.2
-taurosv1b_online.RobustAdvantageFilter.seq_p_full = 0.7
-taurosv1b_online.RobustAdvantageFilter.seq_floor = 0.1
-taurosv1b_online.RobustAdvantageFilter.seq_floor_warmup_steps = 100_000
-taurosv1b_online.RobustAdvantageFilter.seq_buffer_size = 10000
-taurosv1b_online.RobustAdvantageFilter.seq_warmup = 200
+agent.Agent.fbc_filter_func = @taurosv1b_filter.RobustAdvantageFilter()
+agent.MultiTaskAgent.fbc_filter_func = @taurosv1b_filter.RobustAdvantageFilter()
+taurosv1b_filter.RobustAdvantageFilter.beta = 2.0
+taurosv1b_filter.RobustAdvantageFilter.clip_weights_low = 1e-6
+taurosv1b_filter.RobustAdvantageFilter.clip_weights_high = 100.
+taurosv1b_filter.RobustAdvantageFilter.seq_p_low = 0.2
+taurosv1b_filter.RobustAdvantageFilter.seq_p_full = 0.7
+taurosv1b_filter.RobustAdvantageFilter.seq_floor = 0.1
+taurosv1b_filter.RobustAdvantageFilter.seq_floor_warmup_steps = 100_000
+taurosv1b_filter.RobustAdvantageFilter.seq_buffer_size = 10000
+taurosv1b_filter.RobustAdvantageFilter.seq_warmup = 200
 
 MetamonAMAGOExperiment.l2_coeff = 1e-4
 MetamonAMAGOExperiment.learning_rate = 5e-5
