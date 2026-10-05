@@ -1,0 +1,18 @@
+# Public-only offline mixture for the TaurosV1B warm-start experiment.
+#
+# Start from the TaurosV1 offline recipe and remove the unavailable 30% SmallG1Online
+# slice, then renormalize the remaining weights by 1 / 0.70:
+#   replay           0.05 / 0.70 = 0.0714286
+#   pac-base         0.20 / 0.70 = 0.2857143
+#   pac-exploratory  0.20 / 0.70 = 0.2857143
+#   pac-tauros       0.25 / 0.70 = 0.3571428
+#
+# The whole offline block is mixed with the online FIFO by online_rl.py according
+# to the schedule in configs/online_runs/taurosv1b.yaml.
+replay_weight: 0.0714286
+self_play:
+  pac-base: 0.2857143
+  pac-exploratory: 0.2857143
+  pac-tauros: 0.3571428
+formats:
+  - gen1ou
