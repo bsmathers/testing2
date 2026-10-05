@@ -25,7 +25,6 @@ online_anneal_end_epoch: 0
 
 learning_rate: 3.0e-5
 lr_warmup_epochs: 5
-seq_floor_warmup_epochs: 10
 batch_size_per_gpu: 14
 grad_accum: 1
 epochs: 800
