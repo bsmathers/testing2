@@ -75,6 +75,10 @@ run_if_missing() {
 
 count_games() {
   local dir="$1"
+  if [ ! -d "${dir}/gen1ou" ]; then
+    echo 0
+    return 0
+  fi
   find "${dir}/gen1ou" -maxdepth 1 -type f \( -name '*.json' -o -name '*.json.lz4' \) 2>/dev/null | wc -l | tr -d ' '
 }
 
@@ -82,6 +86,7 @@ collect_to_75k() {
   local weights="$1"
   local outdir="$2"
   local count
+  mkdir -p "${outdir}/gen1ou"
   count=$(count_games "${outdir}")
   if [ "${count}" -ge 75000 ]; then
     echo "[resume] ${outdir}: ${count} DAgger games already present"
@@ -197,9 +202,6 @@ if [ ! -s "${E_STATE}" ] || [ ! -s "${E_BEST}" ]; then
   exit 1
 fi
 
-# Gate F on measured V0 parity. This intentionally uses the same 50-game
-# tournament metric that is logged every five epochs; the threshold can be
-# overridden, but defaults to 50%.
 V0_GATE="${V0_GATE:-0.50}"
 "${PYTHON_BIN}" - "${E_STATE}" "${V0_GATE}" <<'PY'
 import json, sys
