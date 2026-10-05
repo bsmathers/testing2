@@ -2,11 +2,11 @@
 
 The online learner writes a numbered raw policy every ``eval_every`` epochs.
 This watcher notices those immutable checkpoints, plays a 50-game H2H against
-TaurosV0@62, logs V1B win rate to Weights & Biases, and optionally deletes
-non-retention checkpoints after successful evaluation so 5-epoch evaluation does
-not multiply long-term checkpoint storage.
+TaurosV0@62, logs V1B win rate to Weights & Biases, tracks/copies the best model,
+and optionally deletes non-retention checkpoints after successful evaluation so
+5-epoch evaluation does not multiply long-term checkpoint storage.
 
-This is intentionally a separate process from the learner.  It gives tournament
+This is intentionally a separate process from the learner. It gives tournament
 evaluation its own W&B run (same group as the learner) and avoids concurrent writes
 to the learner's W&B run.
 """
@@ -46,20 +46,23 @@ def _available_epochs(policy_dir: Path, every: int, min_epoch: int, max_epoch: i
     return sorted(epochs)
 
 
-def _load_state(path: Path) -> set[int]:
+def _load_state(path: Path) -> dict:
     if not path.exists():
-        return set()
+        return {"completed_epochs": [], "best_epoch": None, "best_winrate": None}
     try:
         raw = json.loads(path.read_text())
-        return {int(x) for x in raw.get("completed_epochs", [])}
+        raw.setdefault("completed_epochs", [])
+        raw.setdefault("best_epoch", None)
+        raw.setdefault("best_winrate", None)
+        return raw
     except Exception:
-        return set()
+        return {"completed_epochs": [], "best_epoch": None, "best_winrate": None}
 
 
-def _write_state(path: Path, completed: set[int]) -> None:
+def _write_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"completed_epochs": sorted(completed)}, indent=2))
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
     os.replace(tmp, path)
 
 
@@ -104,8 +107,6 @@ def _run_one(
     )
 
     epoch_dir = output_root / f"epoch_{epoch:04d}"
-    # Never reuse a stale partial result for a new attempt.  Completed epochs are
-    # tracked separately in state.json, so removing this directory is safe.
     if epoch_dir.exists():
         shutil.rmtree(epoch_dir)
     epoch_dir.mkdir(parents=True, exist_ok=True)
@@ -168,7 +169,9 @@ def main() -> None:
     policy_dir = ckpt_root / "policy_weights"
     output_root = save_dir / args.run_name / "tournaments_vs_taurosv0_62"
     state_path = output_root / "state.json"
-    completed = _load_state(state_path)
+    best_path = output_root / "best_policy.pt"
+    state = _load_state(state_path)
+    completed = {int(x) for x in state["completed_epochs"]}
 
     phase_offset = 325 if args.phase == "e" else 1125
     wb = wandb.init(
@@ -234,12 +237,29 @@ def main() -> None:
                     f"({winrate:.1%})",
                     flush=True,
                 )
+
+                best_wr = state.get("best_winrate")
+                if best_wr is None or winrate > float(best_wr):
+                    shutil.copy2(ckpt, best_path)
+                    state["best_epoch"] = epoch
+                    state["best_winrate"] = winrate
+                    wandb.log(
+                        {
+                            "training_epoch": global_epoch,
+                            "tournament/best_winrate_vs_taurosv0_62": winrate,
+                            "tournament/best_phase_epoch": epoch,
+                        },
+                        step=global_epoch,
+                    )
+
                 completed.add(epoch)
-                _write_state(state_path, completed)
+                state["completed_epochs"] = sorted(completed)
+                _write_state(state_path, state)
 
                 # Evaluation requires 5-epoch numbered checkpoints, but long-term
                 # training only needs the 25-epoch lineage plus rolling latest.
-                # Delete the extra checkpoint only *after* a complete logged result.
+                # Delete the extra checkpoint only *after* a complete logged result
+                # and (if it was best) after copying it to best_policy.pt.
                 if args.retain_every > 0 and epoch % args.retain_every != 0:
                     try:
                         ckpt.unlink()
@@ -254,7 +274,6 @@ def main() -> None:
                 except OSError:
                     learner_alive = False
             if not learner_alive:
-                # Drain any checkpoints that appeared immediately before process exit.
                 remaining = [
                     e
                     for e in _available_epochs(
