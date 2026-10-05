@@ -7,11 +7,11 @@ set -euo pipefail
 # Initial run:
 #   BASE_WEIGHTS=/path/to/v1b_phase_d.pt bash scripts/train_taurosv1b.sh e --log
 #   BASE_WEIGHTS=/path/to/phase_e_final.pt bash scripts/train_taurosv1b.sh f --log
-+#
-+# Relaunch after interruption:
-+#   bash scripts/train_taurosv1b.sh e --log
-+# The launcher automatically resumes the newest full Accelerate state and aligns
-+# latest/policy.pt + the collector to the raw policy from that exact epoch.
+#
+# Relaunch after interruption:
+#   bash scripts/train_taurosv1b.sh e --log
+# The launcher automatically resumes the newest full Accelerate state and aligns
+# latest/policy.pt + the collector to the raw policy from that exact epoch.
 
 PHASE="${1:-e}"
 shift || true
