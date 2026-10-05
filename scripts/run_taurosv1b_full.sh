@@ -12,7 +12,7 @@ set -euo pipefail
 #
 # From phase E onward, a separate evaluator plays 50 games against TaurosV0@62
 # every 5 epochs and logs win rate to a W&B evaluation run grouped with the
-# learner.  Five-epoch policy files are pruned after evaluation except every 25th
+# learner. Five-epoch policy files are pruned after evaluation except every 25th
 # epoch; the best checkpoint is copied to best_policy.pt before pruning.
 #
 # Required for W&B:
@@ -20,8 +20,11 @@ set -euo pipefail
 # Optional:
 #   export METAMON_WANDB_PROJECT=online-metamon
 #   export METAMON_WANDB_ENTITY=...
-#   export EVAL_GPU=0
-#   export TRAIN_GPU=0        # if set, constrains learner/collector shell
+#   export EVAL_GPU=0     # GPU index visible to this process; use a spare GPU if available
+#
+# To constrain training to a specific GPU, invoke this whole script under the
+# desired CUDA_VISIBLE_DEVICES setting. In that case EVAL_GPU is relative to the
+# same visible-device list (normally 0 on a one-GPU run).
 #
 # Safe to rerun: completed A-D artifacts are reused; online phases resume from
 # their newest full Accelerate state; tournament state is persistent.
@@ -44,14 +47,6 @@ mkdir -p "${SAVE_DIR}" "${PRETRAIN_DIR}" "${DAGGER1_DIR}" "${DAGGER2_DIR}"
 export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
 export METAMON_SAVE_DIR="${SAVE_DIR}"
 export METAMON_ALLOW_ANY_POKE_ENV=1
-
-if [ -n "${TRAIN_GPU:-}" ]; then
-  export CUDA_VISIBLE_DEVICES="${TRAIN_GPU}"
-  # The evaluator sees the learner-visible device as GPU 0 in this case.
-  if [ "${EVAL_GPU}" = "${TRAIN_GPU}" ]; then
-    EVAL_GPU=0
-  fi
-fi
 
 if [ -z "${WANDB_API_KEY:-}" ]; then
   echo "Warning: WANDB_API_KEY is not set; learner/evaluator W&B logging may fail." >&2
@@ -202,7 +197,7 @@ if [ ! -s "${E_STATE}" ] || [ ! -s "${E_BEST}" ]; then
   exit 1
 fi
 
-# Gate F on measured V0 parity.  This intentionally uses the same 50-game
+# Gate F on measured V0 parity. This intentionally uses the same 50-game
 # tournament metric that is logged every five epochs; the threshold can be
 # overridden, but defaults to 50%.
 V0_GATE="${V0_GATE:-0.50}"
