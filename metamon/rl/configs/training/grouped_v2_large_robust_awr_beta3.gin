@@ -1,5 +1,6 @@
 import amago.agent
 import metamon.rl.taurosv1b_filter
+import metamon.rl.taurosv1b_tournament
 
 # TaurosV1B phase-F objective after the public-only phase has stabilized the
 # distilled student and critic.  Still AWR/CRR-style regression (no IS ratio).
