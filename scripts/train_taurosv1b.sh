@@ -12,9 +12,15 @@ set -euo pipefail
 #   bash scripts/train_taurosv1b.sh e --log
 # The launcher automatically resumes the newest full Accelerate state and aligns
 # latest/policy.pt + the collector to the raw policy from that exact epoch.
+#
+# Phase F additionally mirrors completed FIFO replays into a separate capped
+# archive.  The training FIFO remains at its configured 150k size; archive files
+# are hard-linked on the same filesystem (copied only across filesystems), so FIFO
+# eviction does not remove the archived replay and does not change training data.
 
 PHASE="${1:-e}"
 shift || true
+IS_PHASE_F=0
 case "${PHASE}" in
   e|E)
     CONFIG="metamon/rl/configs/online_runs/taurosv1b.yaml"
@@ -23,6 +29,7 @@ case "${PHASE}" in
   f|F)
     CONFIG="metamon/rl/configs/online_runs/taurosv1b_phase_f.yaml"
     RUN_NAME="taurosv1b_phase_f"
+    IS_PHASE_F=1
     ;;
   *)
     echo "phase must be 'e' or 'f'" >&2
@@ -44,14 +51,21 @@ else
   N_WORKERS="${N_WORKERS:-1}"
 fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+PHASE_F_ARCHIVE_DIR="${PHASE_F_ARCHIVE_DIR:-${REPO_DIR}/taurosv1b_phase_f_replay_archive}"
+PHASE_F_ARCHIVE_MAX="${PHASE_F_ARCHIVE_MAX:-2000000}"
+PHASE_F_ARCHIVE_POLL_SECONDS="${PHASE_F_ARCHIVE_POLL_SECONDS:-60}"
 
 mkdir -p "${SAVE_DIR}" "${BUFFER_DIR}/gen1ou" "${LOG_DIR}"
+if [ "${IS_PHASE_F}" -eq 1 ]; then
+  mkdir -p "${PHASE_F_ARCHIVE_DIR}/gen1ou"
+fi
 export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
 export METAMON_SAVE_DIR="${SAVE_DIR}"
 export METAMON_ALLOW_ANY_POKE_ENV=1
 
 COLLECTOR_PID=""
 LEARNER_PID=""
+ARCHIVER_PID=""
 cleanup() {
   local status=$?
   set +e
@@ -63,14 +77,17 @@ cleanup() {
     kill -TERM "${LEARNER_PID}" 2>/dev/null || true
     pkill -TERM -P "${LEARNER_PID}" 2>/dev/null || true
   fi
+  if [ -n "${ARCHIVER_PID}" ]; then
+    kill -TERM "${ARCHIVER_PID}" 2>/dev/null || true
+  fi
   return "${status}"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Only the learner owns the W&B run. Passing --log to the collector would create
-# a second, misleading tracker run. Other user CLI overrides are learner-only.
+# Only the learner owns the E/F W&B run. Passing --log to the collector would
+# create a second, misleading tracker run. Other user CLI overrides are learner-only.
 LEARNER_EXTRA=("$@")
 
 RUN_DIR="${SAVE_DIR}/${RUN_NAME}/ckpts"
@@ -129,6 +146,7 @@ fi
 cd "${REPO_DIR}"
 COLLECTOR_LOG="${LOG_DIR}/collector.log"
 LEARNER_LOG="${LOG_DIR}/learner.log"
+ARCHIVER_LOG="${LOG_DIR}/phase_f_replay_archive.log"
 
 "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
   --run_config "${CONFIG}" \
@@ -141,11 +159,27 @@ LEARNER_LOG="${LOG_DIR}/learner.log"
   >"${COLLECTOR_LOG}" 2>&1 &
 COLLECTOR_PID=$!
 
+if [ "${IS_PHASE_F}" -eq 1 ]; then
+  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_replay_archive \
+    --source_dir "${BUFFER_DIR}/gen1ou" \
+    --archive_dir "${PHASE_F_ARCHIVE_DIR}/gen1ou" \
+    --max_files "${PHASE_F_ARCHIVE_MAX}" \
+    --poll_seconds "${PHASE_F_ARCHIVE_POLL_SECONDS}" \
+    >"${ARCHIVER_LOG}" 2>&1 &
+  ARCHIVER_PID=$!
+  echo "Phase-F replay archiver PID ${ARCHIVER_PID}; cap=${PHASE_F_ARCHIVE_MAX}, dir=${PHASE_F_ARCHIVE_DIR}/gen1ou"
+fi
+
 echo "Collector PID ${COLLECTOR_PID}; ensuring FIFO has $((DSET_MIN_SIZE + 1)) battles..."
 while true; do
   if ! kill -0 "${COLLECTOR_PID}" 2>/dev/null; then
     echo "Collector exited during FIFO prefill. Last log lines:" >&2
     tail -100 "${COLLECTOR_LOG}" >&2 || true
+    exit 1
+  fi
+  if [ "${IS_PHASE_F}" -eq 1 ] && ! kill -0 "${ARCHIVER_PID}" 2>/dev/null; then
+    echo "Phase-F replay archiver exited unexpectedly. Last log lines:" >&2
+    tail -100 "${ARCHIVER_LOG}" >&2 || true
     exit 1
   fi
   COUNT=$(find "${BUFFER_DIR}/gen1ou" -maxdepth 1 -type f \( -name '*.json' -o -name '*.json.lz4' \) | wc -l | tr -d ' ')
@@ -166,4 +200,41 @@ printf '\nFIFO ready. Starting learner.\n'
   "${LEARNER_EXTRA[@]}" > >(tee "${LEARNER_LOG}") 2>&1 &
 LEARNER_PID=$!
 
-wait "${LEARNER_PID}"
+# Wait for the learner, but fail the run if the requested phase-F archive dies.
+LEARNER_STATUS=0
+while kill -0 "${LEARNER_PID}" 2>/dev/null; do
+  if [ "${IS_PHASE_F}" -eq 1 ] && ! kill -0 "${ARCHIVER_PID}" 2>/dev/null; then
+    echo "Phase-F replay archiver exited unexpectedly during training. Last log lines:" >&2
+    tail -100 "${ARCHIVER_LOG}" >&2 || true
+    kill -TERM "${LEARNER_PID}" 2>/dev/null || true
+    LEARNER_STATUS=1
+    break
+  fi
+  sleep 30
+done
+
+if ! wait "${LEARNER_PID}"; then
+  child_status=$?
+  if [ "${LEARNER_STATUS}" -eq 0 ]; then
+    LEARNER_STATUS="${child_status}"
+  fi
+fi
+LEARNER_PID=""
+
+# On a normal phase-F exit, stop collection first and do one final synchronous
+# archive pass so completed FIFO files cannot be lost in the polling interval.
+if [ "${IS_PHASE_F}" -eq 1 ]; then
+  if [ -n "${COLLECTOR_PID}" ]; then
+    kill -TERM "${COLLECTOR_PID}" 2>/dev/null || true
+    pkill -TERM -P "${COLLECTOR_PID}" 2>/dev/null || true
+    wait "${COLLECTOR_PID}" 2>/dev/null || true
+    COLLECTOR_PID=""
+  fi
+  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_replay_archive \
+    --source_dir "${BUFFER_DIR}/gen1ou" \
+    --archive_dir "${PHASE_F_ARCHIVE_DIR}/gen1ou" \
+    --max_files "${PHASE_F_ARCHIVE_MAX}" \
+    --once || LEARNER_STATUS=1
+fi
+
+exit "${LEARNER_STATUS}"
