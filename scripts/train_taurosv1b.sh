@@ -46,10 +46,17 @@ LANES="${LANES:-128}"
 DSET_MIN_SIZE="${DSET_MIN_SIZE:-5000}"
 TOTAL_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
 if [ "${TOTAL_CPUS}" -gt 2 ]; then
-  N_WORKERS="${N_WORKERS:-$((TOTAL_CPUS - 2))}"
+  DEFAULT_N_WORKERS=$((TOTAL_CPUS - 2))
 else
-  N_WORKERS="${N_WORKERS:-1}"
+  DEFAULT_N_WORKERS=1
 fi
+# The vectorized simulator is already batched across LANES. More than 8 worker
+# processes adds CPU/memory pressure on typical single-GPU hosts without helping
+# the 5070-Ti learner; preserve an explicit N_WORKERS override when requested.
+if [ "${DEFAULT_N_WORKERS}" -gt 8 ]; then
+  DEFAULT_N_WORKERS=8
+fi
+N_WORKERS="${N_WORKERS:-${DEFAULT_N_WORKERS}}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 PHASE_F_ARCHIVE_DIR="${PHASE_F_ARCHIVE_DIR:-${REPO_DIR}/taurosv1b_phase_f_replay_archive}"
 PHASE_F_ARCHIVE_MAX="${PHASE_F_ARCHIVE_MAX:-2000000}"
@@ -72,19 +79,27 @@ cleanup() {
   if [ -n "${COLLECTOR_PID}" ]; then
     kill -TERM "${COLLECTOR_PID}" 2>/dev/null || true
     pkill -TERM -P "${COLLECTOR_PID}" 2>/dev/null || true
+    wait "${COLLECTOR_PID}" 2>/dev/null || true
   fi
   if [ -n "${LEARNER_PID}" ]; then
     kill -TERM "${LEARNER_PID}" 2>/dev/null || true
     pkill -TERM -P "${LEARNER_PID}" 2>/dev/null || true
+    wait "${LEARNER_PID}" 2>/dev/null || true
   fi
   if [ -n "${ARCHIVER_PID}" ]; then
     kill -TERM "${ARCHIVER_PID}" 2>/dev/null || true
+    wait "${ARCHIVER_PID}" 2>/dev/null || true
   fi
   return "${status}"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+process_state() {
+  local pid="$1"
+  ps -o stat= -p "${pid}" 2>/dev/null | awk '{print $1}' || true
+}
 
 # Only the learner owns the E/F W&B run. Passing --log to the collector would
 # create a second, misleading tracker run. Other user CLI overrides are learner-only.
@@ -106,10 +121,11 @@ fi
 
 COLLECTOR_INIT=()
 LEARNER_INIT=()
+mkdir -p "${LATEST_DIR}"
 if [ -n "${RESUME_EPOCH}" ]; then
   RESUME_POLICY="${POLICY_DIR}/policy_epoch_${RESUME_EPOCH}.pt"
-  if [ ! -f "${RESUME_POLICY}" ]; then
-    echo "Found full state epoch ${RESUME_EPOCH}, but matching raw policy is missing: ${RESUME_POLICY}" >&2
+  if [ ! -s "${RESUME_POLICY}" ]; then
+    echo "Found full state epoch ${RESUME_EPOCH}, but matching raw policy is missing/empty: ${RESUME_POLICY}" >&2
     exit 1
   fi
 
@@ -129,7 +145,6 @@ if [ -n "${RESUME_EPOCH}" ]; then
     shopt -u nullglob
   fi
 
-  mkdir -p "${LATEST_DIR}"
   # latest may be newer than the sparse full optimizer state after a crash. Roll
   # it back before the collector starts reading it.
   cp -f "${RESUME_POLICY}" "${LATEST_DIR}/policy.pt"
@@ -138,6 +153,14 @@ if [ -n "${RESUME_EPOCH}" ]; then
   echo "Resuming ${RUN_NAME} from full state epoch ${RESUME_EPOCH}."
 else
   : "${BASE_WEIGHTS:?No resumable state found. Set BASE_WEIGHTS for the initial phase launch.}"
+  if [ ! -s "${BASE_WEIGHTS}" ]; then
+    echo "Initial BASE_WEIGHTS is missing or empty: ${BASE_WEIGHTS}" >&2
+    exit 1
+  fi
+  # Collect-only AMAGO workers reload latest/policy.pt at the beginning of every
+  # collector epoch. Seed it before launching the collector so fresh E/F runs do
+  # not depend on missing-latest behavior during FIFO prefill.
+  cp -f "${BASE_WEIGHTS}" "${LATEST_DIR}/policy.pt"
   COLLECTOR_INIT=(--base_weights "${BASE_WEIGHTS}")
   LEARNER_INIT=(--base_weights "${BASE_WEIGHTS}")
   echo "Starting ${RUN_NAME} from ${BASE_WEIGHTS}."
@@ -172,15 +195,19 @@ fi
 
 echo "Collector PID ${COLLECTOR_PID}; ensuring FIFO has $((DSET_MIN_SIZE + 1)) battles..."
 while true; do
-  if ! kill -0 "${COLLECTOR_PID}" 2>/dev/null; then
+  collector_state="$(process_state "${COLLECTOR_PID}")"
+  if [ -z "${collector_state}" ] || [[ "${collector_state}" == Z* ]]; then
     echo "Collector exited during FIFO prefill. Last log lines:" >&2
     tail -100 "${COLLECTOR_LOG}" >&2 || true
     exit 1
   fi
-  if [ "${IS_PHASE_F}" -eq 1 ] && ! kill -0 "${ARCHIVER_PID}" 2>/dev/null; then
-    echo "Phase-F replay archiver exited unexpectedly. Last log lines:" >&2
-    tail -100 "${ARCHIVER_LOG}" >&2 || true
-    exit 1
+  if [ "${IS_PHASE_F}" -eq 1 ]; then
+    archiver_state="$(process_state "${ARCHIVER_PID}")"
+    if [ -z "${archiver_state}" ] || [[ "${archiver_state}" == Z* ]]; then
+      echo "Phase-F replay archiver exited unexpectedly. Last log lines:" >&2
+      tail -100 "${ARCHIVER_LOG}" >&2 || true
+      exit 1
+    fi
   fi
   COUNT=$(find "${BUFFER_DIR}/gen1ou" -maxdepth 1 -type f \( -name '*.json' -o -name '*.json.lz4' \) | wc -l | tr -d ' ')
   if [ "${COUNT}" -gt "${DSET_MIN_SIZE}" ]; then
@@ -200,26 +227,38 @@ printf '\nFIFO ready. Starting learner.\n'
   "${LEARNER_EXTRA[@]}" > >(tee "${LEARNER_LOG}") 2>&1 &
 LEARNER_PID=$!
 
+# Monitor all asynchronous helpers for both E and F. A dead child that has not
+# yet been waited can remain a zombie for which `kill -0` still succeeds, so use
+# process state rather than kill -0 alone. If collection dies, fail loudly rather
+# than silently training for hundreds of epochs on a frozen FIFO.
 LEARNER_STATUS=0
-if [ "${IS_PHASE_F}" -eq 1 ]; then
-  # Monitor archive health while F runs. A dead child that has not yet been
-  # waited can remain as a zombie for which `kill -0` still succeeds, so inspect
-  # process state as well and break as soon as the learner is gone/zombified.
-  while true; do
-    learner_state=$(ps -o stat= -p "${LEARNER_PID}" 2>/dev/null | awk '{print $1}' || true)
-    if [ -z "${learner_state}" ] || [[ "${learner_state}" == Z* ]]; then
-      break
-    fi
-    if ! kill -0 "${ARCHIVER_PID}" 2>/dev/null; then
+while true; do
+  learner_state="$(process_state "${LEARNER_PID}")"
+  if [ -z "${learner_state}" ] || [[ "${learner_state}" == Z* ]]; then
+    break
+  fi
+
+  collector_state="$(process_state "${COLLECTOR_PID}")"
+  if [ -z "${collector_state}" ] || [[ "${collector_state}" == Z* ]]; then
+    echo "Collector exited unexpectedly during ${RUN_NAME}. Last log lines:" >&2
+    tail -100 "${COLLECTOR_LOG}" >&2 || true
+    kill -TERM "${LEARNER_PID}" 2>/dev/null || true
+    LEARNER_STATUS=1
+    break
+  fi
+
+  if [ "${IS_PHASE_F}" -eq 1 ]; then
+    archiver_state="$(process_state "${ARCHIVER_PID}")"
+    if [ -z "${archiver_state}" ] || [[ "${archiver_state}" == Z* ]]; then
       echo "Phase-F replay archiver exited unexpectedly during training. Last log lines:" >&2
       tail -100 "${ARCHIVER_LOG}" >&2 || true
       kill -TERM "${LEARNER_PID}" 2>/dev/null || true
       LEARNER_STATUS=1
       break
     fi
-    sleep 30
-  done
-fi
+  fi
+  sleep 30
+done
 
 set +e
 wait "${LEARNER_PID}"
@@ -230,15 +269,18 @@ if [ "${child_status}" -ne 0 ] && [ "${LEARNER_STATUS}" -eq 0 ]; then
 fi
 LEARNER_PID=""
 
-# Stop collection, stop the asynchronous archiver, then do one final synchronous
-# pass so completed FIFO files cannot be lost in the polling interval.
+# Collection must stop before the phase returns; otherwise a successful E could
+# leave a background process racing with F. Ignore collector's TERM exit status.
+if [ -n "${COLLECTOR_PID}" ]; then
+  kill -TERM "${COLLECTOR_PID}" 2>/dev/null || true
+  pkill -TERM -P "${COLLECTOR_PID}" 2>/dev/null || true
+  wait "${COLLECTOR_PID}" 2>/dev/null || true
+  COLLECTOR_PID=""
+fi
+
+# Stop the asynchronous archive only after collection is stopped, then perform a
+# final synchronous pass so completed FIFO files cannot be lost in the poll gap.
 if [ "${IS_PHASE_F}" -eq 1 ]; then
-  if [ -n "${COLLECTOR_PID}" ]; then
-    kill -TERM "${COLLECTOR_PID}" 2>/dev/null || true
-    pkill -TERM -P "${COLLECTOR_PID}" 2>/dev/null || true
-    wait "${COLLECTOR_PID}" 2>/dev/null || true
-    COLLECTOR_PID=""
-  fi
   if [ -n "${ARCHIVER_PID}" ]; then
     kill -TERM "${ARCHIVER_PID}" 2>/dev/null || true
     wait "${ARCHIVER_PID}" 2>/dev/null || true

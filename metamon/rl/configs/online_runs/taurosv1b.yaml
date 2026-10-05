@@ -6,7 +6,7 @@
 #     --mode learn --save_dir ... --buffer_dir ... \
 #     --base_weights /path/to/v1b_phase_d.pt
 #
-# The base_model supplies only the exact V1/V1A 35M architecture/spaces.  Its
+# The base_model supplies only the exact V1/V1A 35M architecture/spaces. Its
 # checkpoint is not the initialization: --base_weights must be the output of
 # taurosv1b_pretrain phase D.
 
@@ -17,14 +17,15 @@ battle_format: gen1ou
 dataset_config: online_selfplay_taurosv1b.yaml
 train_gin_config: grouped_v2_large_robust_awr_beta2.gin
 train_pool: metamon/rl/configs/opponent_pools/hl_gen1ou_taurosv1b.yaml
-train_team_set: metamon/rl/configs/team_sets/mediumg1_train.yaml
+# Public/reproducible team set. Do not use mediumg1_train here on a fresh host:
+# it references local-only expert/expert_curated2 directories.
+train_team_set: metamon/rl/configs/team_sets/taurosv1b_public_train.yaml
 
-# modern_replays_v2 is genuinely outside the mediumg1_train team sets; unlike
-# expert_curated, it is not a seed subset of expert_curated2.
+# modern_replays_v2 remains outside the V1B training team set.
 val_pool: metamon/rl/configs/opponent_pools/taurosv1b_val.yaml
 val_team_set: modern_replays_v2
 
-# Buffer is never sampled before dset_min_size is satisfied.  When prefilled,
+# Buffer is never sampled before dset_min_size is satisfied. When prefilled,
 # online share follows 20% -> 60% over epochs 0..400, then stays at 60%.
 dset_max_size: 150000
 dset_min_size: 5000
@@ -41,8 +42,8 @@ epochs: 800
 steps_per_epoch: 1000
 
 # The callback fires every 5 epochs so the in-memory model can play a 50-game
-# tournament against TaurosV0@62 and log the win rate.  The V1B checkpoint hook
-# still persists raw policies only every 25 epochs and full states every 100.
+# tournament against TaurosV0@62 and log the win rate. The V1B checkpoint hook
+# persists raw policies every 25 epochs and full states every 100.
 ckpt_interval: 5
 full_state_ckpt_interval: 100
 mixed_precision: "no"
@@ -53,7 +54,7 @@ train_timesteps_per_epoch: 500
 temp_low: 1.0
 temp_high: 2.25
 
-# Health-check validator only; checkpoint selection should use explicit balanced
-# H2H sweeps.  This is environment timesteps per lane, not a game count.
+# Learn-only mode disables the ordinary validator; the explicit 50-game V0
+# tournament is the live external health check used by this pipeline.
 val_timesteps: 2000
 val_interval: 10

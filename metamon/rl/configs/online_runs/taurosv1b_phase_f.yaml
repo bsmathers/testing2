@@ -1,8 +1,8 @@
 # TaurosV1B phase F: 800 epochs of refinement with gated self-play.
 #
-# Start this only after selecting a phase-E checkpoint that is at least TaurosV0
-# parity on the frozen external H2H matrix.  Load that checkpoint with
-# --base_weights (or --prev_run_dir/--prev_run_name/--prev_checkpoint).
+# The end-to-end launcher enters F after E completes. The dynamic self-play slice
+# begins empty and safely falls back to the frozen public rows until phase-F V1B
+# checkpoints appear on disk.
 
 run_name: taurosv1b_phase_f
 base_model: TaurosV1A
@@ -11,7 +11,8 @@ battle_format: gen1ou
 dataset_config: online_selfplay_taurosv1b.yaml
 train_gin_config: grouped_v2_large_robust_awr_beta3.gin
 train_pool: metamon/rl/configs/opponent_pools/hl_gen1ou_taurosv1b_selfplay.yaml
-train_team_set: metamon/rl/configs/team_sets/mediumg1_train.yaml
+# Public/reproducible team set; avoids local-only expert team directories.
+train_team_set: metamon/rl/configs/team_sets/taurosv1b_public_train.yaml
 
 val_pool: metamon/rl/configs/opponent_pools/taurosv1b_val.yaml
 val_team_set: modern_replays_v2
@@ -30,7 +31,7 @@ grad_accum: 1
 epochs: 800
 steps_per_epoch: 1000
 
-# Fire the monitored checkpoint hook every 5 epochs.  The hook retains raw
+# Fire the monitored checkpoint hook every 5 epochs. The hook retains raw
 # policies only every 25 and full optimizer/RNG state only every 100.
 ckpt_interval: 5
 full_state_ckpt_interval: 100
