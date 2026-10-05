@@ -1,9 +1,9 @@
 """Archive phase-F online replays without changing the learner's 150k FIFO.
 
 The online collector writes completed ``.json.lz4`` trajectories into the normal
-FIFO.  This process periodically snapshots newly visible FIFO files into a
+FIFO. This process periodically snapshots newly visible FIFO files into a
 separate archive, using hard links when both directories share a filesystem and
-falling back to copies otherwise.  FIFO eviction can then unlink its pathname
+falling back to copies otherwise. FIFO eviction can then unlink its pathname
 without deleting the archived replay.
 
 Only atomically-completed replay filenames are considered (never ``.tmp`` files).
@@ -38,7 +38,11 @@ def _is_replay_name(name: str) -> bool:
 def _count_replays(directory: Path) -> int:
     if not directory.is_dir():
         return 0
-    return sum(1 for e in os.scandir(directory) if e.is_file() and _is_replay_name(e.name))
+    return sum(
+        1
+        for entry in os.scandir(directory)
+        if entry.is_file() and _is_replay_name(entry.name)
+    )
 
 
 def _write_state(path: Path, count: int, max_files: int) -> None:
@@ -59,7 +63,7 @@ def _load_count(archive_dir: Path, state_path: Path, max_files: int) -> int:
             state = json.loads(state_path.read_text())
             state_count = int(state["count"])
             if int(state.get("max_files", max_files)) == max_files:
-                # A link/copy updates the directory mtime.  State is written after
+                # A link/copy updates the directory mtime. State is written after
                 # each scan, so an archive newer than state indicates an interrupted
                 # scan and requires a recount.
                 if archive_dir.stat().st_mtime_ns <= state_path.stat().st_mtime_ns:
@@ -141,6 +145,12 @@ def archive_once(
     return count, current_names, added
 
 
+def _idle_until_stopped(poll_seconds: float) -> None:
+    """Stay alive after the cap is reached so the launcher sees a healthy helper."""
+    while not _STOP:
+        time.sleep(min(poll_seconds, 60.0))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Archive TaurosV1B phase-F replays")
     parser.add_argument("--source_dir", required=True)
@@ -160,15 +170,20 @@ def main() -> None:
     archive_dir.mkdir(parents=True, exist_ok=True)
     state_path = archive_dir.parent / ".taurosv1b_archive_state.json"
 
+    signal.signal(signal.SIGTERM, _handle_stop)
+    signal.signal(signal.SIGINT, _handle_stop)
+
     count = _load_count(archive_dir, state_path, args.max_files)
-    if count > args.max_files:
-        # Never delete user data automatically.  Treat an already-oversized archive
-        # as full and leave its contents untouched.
+    if count >= args.max_files:
+        # Never delete user data automatically. Treat an already-full/oversized
+        # archive as complete and remain alive during a long phase-F run.
         print(
-            f"Archive already contains {count:,} replays (> cap {args.max_files:,}); "
-            "no new files will be added.",
+            f"Phase-F replay archive already full: {count:,}/{args.max_files:,}; "
+            "idling without adding files.",
             flush=True,
         )
+        if not args.once:
+            _idle_until_stopped(args.poll_seconds)
         return
 
     print(
@@ -176,9 +191,6 @@ def main() -> None:
         f"source={source_dir}",
         flush=True,
     )
-
-    signal.signal(signal.SIGTERM, _handle_stop)
-    signal.signal(signal.SIGINT, _handle_stop)
 
     previous_names: set[str] | None = None
     while True:
@@ -196,7 +208,14 @@ def main() -> None:
                 flush=True,
             )
 
-        if args.once or count >= args.max_files or _STOP:
+        if args.once or _STOP:
+            break
+        if count >= args.max_files:
+            print(
+                f"Phase-F replay archive reached cap ({count:,}); idling.",
+                flush=True,
+            )
+            _idle_until_stopped(args.poll_seconds)
             break
         time.sleep(args.poll_seconds)
 
