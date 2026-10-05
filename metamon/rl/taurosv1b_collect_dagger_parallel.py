@@ -1,9 +1,11 @@
-"""Run TaurosV1B DAgger collection across independent CPU-bound shards.
+"""Run TaurosV1B DAgger collection across independent GPU-backed shards.
 
-A single collector is coordinator-bound in Python.  This launcher runs multiple
-collectors concurrently, each with its own replay directory, then hard-links the
-completed replays into the canonical DAgger directory.  Shards are count-resumable.
-If the source actor/config changes, stale DAgger data is discarded automatically.
+A single collector is coordinator-bound in Python. This launcher runs a small
+number of collectors concurrently, each with its own replay directory, then
+hard-links completed replays into the canonical DAgger directory. TaurosV1A
+uses FlashAttention and therefore must keep CUDA visible during collection.
+Shards are count-resumable. If the source actor/config changes, stale DAgger
+data is discarded automatically.
 """
 
 from __future__ import annotations
