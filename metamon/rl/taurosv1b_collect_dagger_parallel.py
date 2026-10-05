@@ -83,7 +83,7 @@ def main() -> None:
     p.add_argument("--weights", required=True)
     p.add_argument("--output_dir", required=True)
     p.add_argument("--target_games", type=int, default=75_000)
-    p.add_argument("--shards", type=int, default=min(os.cpu_count() or 1, 16))
+    p.add_argument("--shards", type=int, default=min(os.cpu_count() or 1, 4))
     p.add_argument("--lanes_per_shard", type=int, default=16)
     p.add_argument("--workers_per_shard", type=int, default=1)
     p.add_argument("--seed", type=int, default=0)
@@ -97,11 +97,6 @@ def main() -> None:
     )
     p.add_argument("--temp_low", type=float, default=1.0)
     p.add_argument("--temp_high", type=float, default=1.5)
-    p.add_argument(
-        "--allow_cuda",
-        action="store_true",
-        help="Leave CUDA visible to shard collectors. Default is CPU-only shards.",
-    )
     args = p.parse_args()
 
     if args.target_games <= 0:
@@ -117,7 +112,7 @@ def main() -> None:
     output = Path(args.output_dir).resolve()
     shard_root = Path(f"{output}_shards")
     signature = {
-        "version": 1,
+        "version": 2,
         "weights": weights,
         "weights_sha256": _sha256(weights),
         "target_games": args.target_games,
@@ -128,7 +123,7 @@ def main() -> None:
         "train_team_set": args.train_team_set,
         "temp_low": args.temp_low,
         "temp_high": args.temp_high,
-        "cpu_only": not args.allow_cuda,
+        "cuda_required": True,
     }
 
     output_marker = output / ".taurosv1b_parallel_dagger_source.json"
@@ -150,9 +145,11 @@ def main() -> None:
 
     children = []
     log_handles = []
+    # TaurosV1A uses FlashAttention, whose inference path is CUDA-only in this
+    # environment.  Do not hide CUDA from collectors.  Keep the default shard
+    # count intentionally small to avoid replicating too many policies/KV caches
+    # on a 16 GB training GPU.
     child_env = os.environ.copy()
-    if not args.allow_cuda:
-        child_env["CUDA_VISIBLE_DEVICES"] = ""
 
     try:
         for i, target in enumerate(targets):
