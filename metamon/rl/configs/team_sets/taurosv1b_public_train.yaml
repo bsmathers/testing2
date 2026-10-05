@@ -1,0 +1,7 @@
+# TaurosV1B trainee team set for public/reproducible runs.
+#
+# Keep this to auto-downloadable Metamon team sets. The historical MediumG1
+# mixture also references local-only `expert` / `expert_curated2` directories,
+# which are not present on a fresh machine and would crash an unattended run.
+# `hl_05_26` is the high-ladder public set used by the frozen opponent pools.
+team_set: hl_05_26
