@@ -1,0 +1,62 @@
+# TaurosV1B phase-F opponent pool.
+#
+# Static public anchors retain ~65% row mass.  The remaining ~35% is the current
+# V1B lineage, discovered from {METAMON_SAVE_DIR}/taurosv1b_phase_f/ckpts and
+# weighted geometrically toward recent checkpoints.  Phase F is only launched
+# after the phase-E model has cleared the TaurosV0 external gate.
+defaults:
+  team_set: hl_05_26
+  battle_backend: metamon
+  checkpoints: [null]
+  temperatures: [0.75, 1.0, 1.25, 1.5, 1.75]
+  num_agents: 1
+
+agents:
+  # Static mass = 17.
+  TaurosV0:
+    model_name: TaurosV0
+    num_agents: 5
+    checkpoints: "range(50, 63, 2)"
+
+  Kakuna:
+    model_name: Kakuna
+    num_agents: 3
+    checkpoints: "range(24, 35, 2)"
+
+  V2ADataAblation:
+    model_name: V2AGroupedV2DataAblation
+    num_agents: 2
+    checkpoints: "range(74, 91, 2)"
+
+  SyntheticRLV2:
+    model_name: SyntheticRLV2
+    num_agents: 2
+    checkpoints: "range(36, 49, 2)"
+
+  Superkazam:
+    model_name: Superkazam
+    num_agents: 2
+    checkpoints: "range(38, 51, 2)"
+
+  Alakazam:
+    model_name: Alakazam
+    checkpoints: "range(2, 9, 2)"
+
+  Kadabra3:
+    model_name: Kadabra3
+    checkpoints: "range(10, 21, 2)"
+
+  SyntheticRLV1:
+    model_name: SyntheticRLV1
+    checkpoints: [null]
+
+  # Dynamic mass target = 9, hence 9 / (17 + 9) = 34.6% once populated.
+  # taurosv1b_online registers TaurosV1B as a local model whose run name is
+  # supplied by TAUROSV1B_RUN_NAME (the phase-F runner sets it automatically).
+  TaurosSelf:
+    model_name: TaurosV1B
+    checkpoints:
+      discover: true
+      include_latest: true
+      recency_rho: 1.5
+      total_num_agents: 9
