@@ -8,18 +8,22 @@ TaurosV0@62, and logs the win rate to the same W&B/Accelerate tracker.
 The tournament uses the in-memory trainee.  It does not create a temporary policy
 checkpoint, so the 5-epoch monitoring cadence adds no persistent model storage.
 Persistent raw policies are still kept every 25 epochs and full Accelerate states
-every 100 epochs.
+every 100 epochs.  Evaluation RNG state is restored afterwards so monitoring does
+not perturb subsequent learner randomness.
 """
 
 from __future__ import annotations
 
+import gc
 import math
 import os
+import random
 import sys
 from typing import Optional
 
 import amago
 import gin
+import numpy as np
 import torch
 
 from metamon.rl import online_rl as legacy
@@ -36,13 +40,7 @@ TOURNAMENT_MAX_TIMESTEPS = 100_000
 
 
 def _force_reload_training_gin(experiment) -> None:
-    """Restore trainee gin after the tournament loads the V0 opponent.
-
-    ``MetamonOnlineExperiment._reload_gin`` intentionally no-ops in learn-only
-    mode because its ordinary placeholder envs do not load opponents.  The
-    periodic tournament *does* load an opponent, so we need the same restoration
-    logic without that learn-only guard.
-    """
+    """Restore trainee gin after the tournament loads the V0 opponent."""
     config = getattr(experiment, "_gin_config", None)
     files = getattr(experiment, "_gin_config_files", None)
     if config is None or files is None:
@@ -58,6 +56,23 @@ def _force_reload_training_gin(experiment) -> None:
     gin.finalize()
 
 
+def _capture_rng_state():
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.random.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+
+
+def _restore_rng_state(state) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.random.set_rng_state(state["torch"])
+    if state["cuda"] is not None:
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
 def _run_v0_tournament(experiment) -> float:
     """Run exactly 50 sequential games and return V1B's win rate."""
     if experiment.accelerator.num_processes != 1:
@@ -66,38 +81,48 @@ def _run_v0_tournament(experiment) -> float:
             "process. Launch V1B with one GPU/process or disable the hook."
         )
 
-    trainee_spec = get_pretrained_model("TaurosV1A")
-    opponent = load_simple_opponent_pool(
-        opponent_agent="TaurosV0",
-        battle_format="gen1ou",
-        team_set=TOURNAMENT_TEAM_SET,
-        checkpoint=TOURNAMENT_V0_CHECKPOINT,
-        temperature=1.0,
-        battle_backend="metamon",
-    )
-    make_env = legacy._make_val_env(
-        trainee_spec,
-        battle_format="gen1ou",
-        reward_function=trainee_spec.reward_function,
-        val_opponent_kwargs={"opponent_config": opponent},
-        # One lane is intentional: AMAGO's episode stopping condition is global
-        # across lanes, so one lane guarantees exactly 50 completed games rather
-        # than potentially overshooting by several simultaneous terminations.
-        lanes=1,
-        n_workers=1,
-        seed=10_000 + int(experiment.epoch),
-        team_set_name=TOURNAMENT_TEAM_SET,
-    )
-
+    rng_state = _capture_rng_state()
+    was_training = bool(experiment.policy.training)
+    metrics = None
     try:
+        trainee_spec = get_pretrained_model("TaurosV1A")
+        opponent = load_simple_opponent_pool(
+            opponent_agent="TaurosV0",
+            battle_format="gen1ou",
+            team_set=TOURNAMENT_TEAM_SET,
+            checkpoint=TOURNAMENT_V0_CHECKPOINT,
+            temperature=1.0,
+            battle_backend="metamon",
+        )
+        make_env = legacy._make_val_env(
+            trainee_spec,
+            battle_format="gen1ou",
+            reward_function=trainee_spec.reward_function,
+            val_opponent_kwargs={"opponent_config": opponent},
+            # One lane guarantees that AMAGO cannot overshoot the requested game
+            # count by several simultaneous terminations.
+            lanes=1,
+            n_workers=1,
+            seed=10_000 + int(experiment.epoch),
+            team_set_name=TOURNAMENT_TEAM_SET,
+        )
         metrics = experiment.evaluate_test(
             make_env,
             timesteps=TOURNAMENT_MAX_TIMESTEPS,
             episodes=TOURNAMENT_GAMES,
         )
     finally:
+        # Opponent initialization clears/rebinds global gin.  Restore the trainee
+        # configuration before the next optimization step.
         _force_reload_training_gin(experiment)
+        _restore_rng_state(rng_state)
+        experiment.policy.train(was_training)
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
+    if metrics is None:
+        raise RuntimeError("V0 tournament failed before producing metrics.")
     win_values = [
         float(v)
         for k, v in metrics.items()
@@ -107,8 +132,6 @@ def _run_v0_tournament(experiment) -> float:
         raise RuntimeError(
             "50-game V0 tournament completed without an 'Average Win Rate' metric."
         )
-    # There is one single-lane test env, but averaging is harmless if its naming
-    # changes and more than one equivalent metric is emitted later.
     return sum(win_values) / len(win_values)
 
 
@@ -140,12 +163,9 @@ def _patched_save_checkpoint(self) -> None:
         )
 
     # Epoch 0 is useful as a checkpoint but is not "five epochs of E/F" yet.
-    tournament_due = epoch > 0 and epoch % TOURNAMENT_INTERVAL == 0
-    if not tournament_due:
+    if epoch <= 0 or epoch % TOURNAMENT_INTERVAL != 0:
         return
 
-    # The tracked V1B launcher is single-GPU.  Make the synchronization explicit
-    # so an accidental distributed launch fails cleanly instead of desynchronizing.
     self.accelerator.wait_for_everyone()
     if main:
         win_rate = _run_v0_tournament(self)
@@ -168,9 +188,8 @@ def _patched_save_checkpoint(self) -> None:
 
 def _install_patch() -> None:
     # ``python -m metamon.rl.taurosv1b_online`` executes that file as __main__.
-    # When imported normally (e.g. by the DAgger collector), use its canonical
-    # module name.  Avoid importing the runner here: doing so from a gin import
-    # during ``-m`` execution would execute the runner a second time.
+    # Avoid importing the runner here: doing so from a gin import during ``-m``
+    # execution would execute the runner a second time.
     for module_name in ("__main__", "metamon.rl.taurosv1b_online"):
         module = sys.modules.get(module_name)
         cls = getattr(module, "TaurosV1BOnlineExperiment", None) if module else None
