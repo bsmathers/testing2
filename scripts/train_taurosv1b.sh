@@ -14,7 +14,7 @@ set -euo pipefail
 # latest/policy.pt + the collector to the raw policy from that exact epoch.
 #
 # Phase F additionally mirrors completed FIFO replays into a separate capped
-# archive.  The training FIFO remains at its configured 150k size; archive files
+# archive. The training FIFO remains at its configured 150k size; archive files
 # are hard-linked on the same filesystem (copied only across filesystems), so FIFO
 # eviction does not remove the archived replay and does not change training data.
 
@@ -213,22 +213,28 @@ while kill -0 "${LEARNER_PID}" 2>/dev/null; do
   sleep 30
 done
 
-if ! wait "${LEARNER_PID}"; then
-  child_status=$?
-  if [ "${LEARNER_STATUS}" -eq 0 ]; then
-    LEARNER_STATUS="${child_status}"
-  fi
+set +e
+wait "${LEARNER_PID}"
+child_status=$?
+set -e
+if [ "${child_status}" -ne 0 ] && [ "${LEARNER_STATUS}" -eq 0 ]; then
+  LEARNER_STATUS="${child_status}"
 fi
 LEARNER_PID=""
 
-# On a normal phase-F exit, stop collection first and do one final synchronous
-# archive pass so completed FIFO files cannot be lost in the polling interval.
+# Stop collection, stop the asynchronous archiver, then do one final synchronous
+# pass so completed FIFO files cannot be lost in the polling interval.
 if [ "${IS_PHASE_F}" -eq 1 ]; then
   if [ -n "${COLLECTOR_PID}" ]; then
     kill -TERM "${COLLECTOR_PID}" 2>/dev/null || true
     pkill -TERM -P "${COLLECTOR_PID}" 2>/dev/null || true
     wait "${COLLECTOR_PID}" 2>/dev/null || true
     COLLECTOR_PID=""
+  fi
+  if [ -n "${ARCHIVER_PID}" ]; then
+    kill -TERM "${ARCHIVER_PID}" 2>/dev/null || true
+    wait "${ARCHIVER_PID}" 2>/dev/null || true
+    ARCHIVER_PID=""
   fi
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_replay_archive \
     --source_dir "${BUFFER_DIR}/gen1ou" \
