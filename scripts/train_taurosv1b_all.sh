@@ -2,36 +2,16 @@
 set -euo pipefail
 
 # End-to-end TaurosV1B pipeline:
-#   A -> DAgger1 -> B1 -> DAgger2 -> B2 -> C -> D -> E -> F
+#   A(150) -> A-fixed(150 @ 1e-5) -> 400-game V0 tournament
+#   -> DAgger1 -> B1 -> DAgger2 -> B2 -> C -> D -> E -> F
 #
-# The script is resumable. Completed pretraining checkpoints are skipped,
-# DAgger collectors continue toward their target battle count, and the E/F
-# launcher resumes the newest full optimizer state with a policy-consistent
-# collector.
+# The second A pass intentionally resets optimizer state, disables warmup, and
+# uses a fixed eta=1e-5 for all 150 epochs.  Its output is the actor used by
+# the 400-game TaurosV0@62 tournament and by DAgger-1.
 #
-# W&B:
-#   - A-D run through taurosv1b_pretrain_wandb and log per-epoch training metrics.
-#     Since A-D restart from the beginning of a phase after interruption, a retry
-#     intentionally creates a new W&B attempt under the same experiment group.
-#   - E/F launch with --log and keep all standard AMAGO metrics.
-#   - Every 5 epochs (after epoch 0), E/F additionally run 50 games against
-#     TaurosV0@62 and log tournament/v0_62_win_rate to the same learner W&B run.
-#   - A persistent local experiment ID gives E and F stable W&B run IDs, so a
-#     crashed online learner resumes the same W&B run rather than creating a duplicate.
-#   - Set METAMON_WANDB_PROJECT / METAMON_WANDB_ENTITY / WANDB_MODE as desired.
-#
-# A-D throughput:
-#   - replay decode/collation uses parallel persistent DataLoader workers;
-#   - each learner epoch has a live minibatch progress bar;
-#   - PRETRAIN_BATCH_SIZE is left at the original 8 by default so this throughput
-#     change does not silently alter the optimization recipe. It can be raised
-#     explicitly after checking VRAM headroom.
-#
-# Phase-F replay retention:
-#   - training FIFO stays at 150k (the recipe is unchanged);
-#   - a separate archive retains up to 2M completed phase-F replays;
-#   - hard links are used when possible, so archived files consume new blocks only
-#     after the FIFO evicts its pathname.
+# DAgger collection is sharded across independent CPU-bound collectors because
+# a single collector is coordinator-bound in Python.  Shards are resumable and
+# are invalidated automatically if the source actor/config changes.
 #
 # Typical use:
 #   bash scripts/train_taurosv1b_all.sh
@@ -41,12 +21,13 @@ set -euo pipefail
 #   METAMON_SAVE_DIR=/fast/nvme/v1b/checkpoints
 #   METAMON_CACHE_DIR=/fast/nvme/metamon_cache
 #   METAMON_WANDB_PROJECT=taurosv1b
-#   WANDB_MODE=online        # or offline / disabled
+#   WANDB_MODE=online
 #   DAGGER_GAMES=75000
+#   DAGGER_SHARDS=16
+#   DAGGER_LANES_PER_SHARD=16
+#   DAGGER_WORKERS_PER_SHARD=1
 #   PRETRAIN_BATCH_SIZE=8
 #   PRETRAIN_DLOADER_WORKERS=8
-#   LANES=128
-#   N_WORKERS=30
 #   PHASE_F_ARCHIVE_DIR=/fast/nvme/v1b/phase_f_replay_archive
 #   PHASE_F_ARCHIVE_MAX=2000000
 
@@ -76,11 +57,24 @@ PRETRAIN_ARGS=(
   --dloader_workers "${PRETRAIN_DLOADER_WORKERS}"
 )
 
+DEFAULT_DAGGER_SHARDS=$((CPU_COUNT * 2 / 3))
+if [ "${DEFAULT_DAGGER_SHARDS}" -lt 1 ]; then
+  DEFAULT_DAGGER_SHARDS=1
+elif [ "${DEFAULT_DAGGER_SHARDS}" -gt 16 ]; then
+  DEFAULT_DAGGER_SHARDS=16
+fi
+DAGGER_SHARDS="${DAGGER_SHARDS:-${DEFAULT_DAGGER_SHARDS}}"
+DAGGER_LANES_PER_SHARD="${DAGGER_LANES_PER_SHARD:-16}"
+DAGGER_WORKERS_PER_SHARD="${DAGGER_WORKERS_PER_SHARD:-1}"
+DAGGER_ARGS=(
+  --shards "${DAGGER_SHARDS}"
+  --lanes_per_shard "${DAGGER_LANES_PER_SHARD}"
+  --workers_per_shard "${DAGGER_WORKERS_PER_SHARD}"
+)
+
 mkdir -p \
   "${WORK_DIR}" \
   "${PRETRAIN_DIR}" \
-  "${DAGGER1_DIR}/gen1ou" \
-  "${DAGGER2_DIR}/gen1ou" \
   "${STAGE_DIR}"
 
 EXPERIMENT_ID_FILE="${WORK_DIR}/experiment_id.txt"
@@ -104,13 +98,16 @@ export V1B_EXPERIMENT_ID="${EXPERIMENT_ID}"
 
 mkdir -p "${METAMON_SAVE_DIR}" "${METAMON_CACHE_DIR}"
 
-PHASE_A="${PRETRAIN_DIR}/phase_a.pt"
+PHASE_A_150="${PRETRAIN_DIR}/phase_a_150.pt"
+PHASE_A="${PRETRAIN_DIR}/phase_a_300.pt"
+PHASE_A_TOURNAMENT="${PRETRAIN_DIR}/phase_a_300_vs_taurosv0_400.json"
 PHASE_B1="${PRETRAIN_DIR}/phase_b1.pt"
 PHASE_B2="${PRETRAIN_DIR}/phase_b2.pt"
 PHASE_C="${PRETRAIN_DIR}/phase_c.pt"
 PHASE_D="${PRETRAIN_DIR}/phase_d.pt"
 PHASE_E_FINAL="${PRETRAIN_DIR}/phase_e_final.pt"
 PHASE_F_FINAL="${PRETRAIN_DIR}/phase_f_final.pt"
+LEGACY_PHASE_A="${PRETRAIN_DIR}/phase_a.pt"
 
 stage() {
   printf '\n\n============================================================\n'
@@ -132,12 +129,6 @@ run_if_missing() {
   fi
 }
 
-count_replays() {
-  local root="$1"
-  find "${root}/gen1ou" -maxdepth 1 -type f \
-    \( -name '*.json' -o -name '*.json.lz4' \) 2>/dev/null | wc -l | tr -d ' '
-}
-
 # Build the fast simulator once if this checkout has not already done so.
 if [ ! -f "${REPO_DIR}/metamon/env/vectorized/pkmn-showdown.node" ] \
    && [ -x "${SCRIPT_DIR}/setup_pkmn_engine.sh" ]; then
@@ -147,24 +138,41 @@ fi
 
 cd "${REPO_DIR}"
 echo "A-D pretraining loader: batch=${PRETRAIN_BATCH_SIZE}, workers=${PRETRAIN_DLOADER_WORKERS}"
+echo "DAgger parallelism: shards=${DAGGER_SHARDS}, lanes/shard=${DAGGER_LANES_PER_SHARD}, workers/shard=${DAGGER_WORKERS_PER_SHARD}"
 
-stage "A — 150 epochs V0 policy distillation"
-run_if_missing "${PHASE_A}" \
+# Migration for runs that completed the old single 150-epoch Phase A.  The old
+# canonical phase_a.pt is exactly the input needed by the new fixed-LR pass.
+if [ ! -s "${PHASE_A_150}" ] && [ -s "${LEGACY_PHASE_A}" ]; then
+  echo "[migrate] Preserving legacy Phase-A checkpoint as ${PHASE_A_150}"
+  cp -p "${LEGACY_PHASE_A}" "${PHASE_A_150}"
+fi
+
+stage "A — initial 150 epochs V0 policy distillation"
+run_if_missing "${PHASE_A_150}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase a \
     "${PRETRAIN_ARGS[@]}" \
+    --output_weights "${PHASE_A_150}"
+
+stage "A-fixed — 150 more epochs at fixed eta=1e-5, no warmup"
+run_if_missing "${PHASE_A}" \
+  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_retrain_a_wandb \
+    "${PRETRAIN_ARGS[@]}" \
+    --input_weights "${PHASE_A_150}" \
     --output_weights "${PHASE_A}"
 
-stage "DAgger round 1 — ${DAGGER_GAMES} student-occupancy battles"
-D1_COUNT=$(count_replays "${DAGGER1_DIR}")
-if [ "${D1_COUNT}" -lt "${DAGGER_GAMES}" ]; then
-  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_collect_dagger \
-    --weights "${PHASE_A}" \
-    --output_dir "${DAGGER1_DIR}" \
-    --target_games "${DAGGER_GAMES}"
-else
-  echo "[skip] DAgger-1 already has ${D1_COUNT} battles."
-fi
+stage "A-fixed actor tournament — 400 games vs TaurosV0@62"
+"${PYTHON_BIN}" -m metamon.rl.taurosv1b_actor_tournament \
+  --weights "${PHASE_A}" \
+  --games 400 \
+  --output "${PHASE_A_TOURNAMENT}"
+
+stage "DAgger round 1 — ${DAGGER_GAMES} student-occupancy battles (multicore)"
+"${PYTHON_BIN}" -m metamon.rl.taurosv1b_collect_dagger_parallel \
+  --weights "${PHASE_A}" \
+  --output_dir "${DAGGER1_DIR}" \
+  --target_games "${DAGGER_GAMES}" \
+  "${DAGGER_ARGS[@]}"
 
 stage "B1 — 50 epochs public + DAgger-1 distillation"
 run_if_missing "${PHASE_B1}" \
@@ -175,16 +183,12 @@ run_if_missing "${PHASE_B1}" \
     --dagger1_dir "${DAGGER1_DIR}" \
     --output_weights "${PHASE_B1}"
 
-stage "DAgger round 2 — ${DAGGER_GAMES} student-occupancy battles"
-D2_COUNT=$(count_replays "${DAGGER2_DIR}")
-if [ "${D2_COUNT}" -lt "${DAGGER_GAMES}" ]; then
-  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_collect_dagger \
-    --weights "${PHASE_B1}" \
-    --output_dir "${DAGGER2_DIR}" \
-    --target_games "${DAGGER_GAMES}"
-else
-  echo "[skip] DAgger-2 already has ${D2_COUNT} battles."
-fi
+stage "DAgger round 2 — ${DAGGER_GAMES} student-occupancy battles (multicore)"
+"${PYTHON_BIN}" -m metamon.rl.taurosv1b_collect_dagger_parallel \
+  --weights "${PHASE_B1}" \
+  --output_dir "${DAGGER2_DIR}" \
+  --target_games "${DAGGER_GAMES}" \
+  "${DAGGER_ARGS[@]}"
 
 stage "B2 — 50 epochs public + both DAgger piles"
 run_if_missing "${PHASE_B2}" \
@@ -267,6 +271,7 @@ fi
 
 stage "complete"
 echo "Final TaurosV1B policy: ${PHASE_F_FINAL}"
+echo "Phase-A tournament:    ${PHASE_A_TOURNAMENT}"
 echo "Phase-F replay archive: ${F_ARCHIVE_DIR}/gen1ou (cap ${F_ARCHIVE_MAX})"
 echo "W&B project:       ${METAMON_WANDB_PROJECT}"
 echo "W&B group:         ${WANDB_RUN_GROUP}"
