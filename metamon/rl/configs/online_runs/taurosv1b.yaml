@@ -1,55 +1,59 @@
-# TaurosV1B: public-only continuation of TaurosV1A (gen1ou).
+# TaurosV1B phase E: 800 epochs of public-only online RL after A-D distillation.
 #
-# Keep the TaurosV1/V1A GroupedV2 architecture and ISAdvantageFilter objective
-# unchanged. V1B tests whether a stronger public curriculum can recover the main
-# benefits of TaurosV2 without any SmallG1Online models or datasets:
-#   1. initialize from a competent TaurosV1A policy rather than random weights,
-#   2. restore the broad public TaurosV1 offline/team mixture,
-#   3. train against public anchors + frozen V1A history + delayed V1B self-play.
+# Launch with the audited runner, NOT metamon.rl.online_rl:
+#   python -m metamon.rl.taurosv1b_online \
+#     --run_config metamon/rl/configs/online_runs/taurosv1b.yaml \
+#     --mode learn --save_dir ... --buffer_dir ... \
+#     --base_weights /path/to/v1b_phase_d.pt
 #
-# base_checkpoint=-1 loads TaurosV1A's rolling latest/policy.pt. For a final
-# reproducible run, override this with the best robustly evaluated V1A epoch:
-#   --base_checkpoint N
-# TAUROSV1A_SAVE_DIR (or METAMON_SAVE_DIR) must point at the V1A checkpoint root.
+# The base_model supplies only the exact V1/V1A 35M architecture/spaces.  Its
+# checkpoint is not the initialization: --base_weights must be the output of
+# taurosv1b_pretrain phase D.
 
-run_name: taurosv1b
+run_name: taurosv1b_phase_e
 base_model: TaurosV1A
-base_checkpoint: -1
 battle_format: gen1ou
 
 dataset_config: online_selfplay_taurosv1b.yaml
-train_gin_config: grouped_v2_large_isfilter.gin
+train_gin_config: grouped_v2_large_robust_awr_beta2.gin
 train_pool: metamon/rl/configs/opponent_pools/hl_gen1ou_taurosv1b.yaml
 train_team_set: metamon/rl/configs/team_sets/mediumg1_train.yaml
 
-# Validation uses five frozen public anchors and a POV team set not used by the
-# mediumg1_train collector mixture (which uses expert_curated2, not expert_curated).
+# modern_replays_v2 is genuinely outside the mediumg1_train team sets; unlike
+# expert_curated, it is not a seed subset of expert_curated2.
 val_pool: metamon/rl/configs/opponent_pools/taurosv1b_val.yaml
-val_team_set: expert_curated
+val_team_set: modern_replays_v2
 
-# The V1A parent is already competent, so useful fresh experience can enter much
-# earlier than in the V1A cold start. Offline data remains a substantial anchor.
+# Buffer is never sampled before dset_min_size is satisfied.  When prefilled,
+# online share follows 20% -> 60% over epochs 0..400, then stays at 60%.
 dset_max_size: 150000
-initial_online_weight: 0.35
+dset_min_size: 5000
+initial_online_weight: 0.20
 online_weight: 0.60
 online_anneal_start_epoch: 0
-online_anneal_end_epoch: 300
+online_anneal_end_epoch: 400
 
-# Refinement LR: deliberately lower than TaurosV1A's from-scratch 1e-4.
 learning_rate: 5.0e-5
-lr_warmup_epochs: 10
+lr_warmup_epochs: 5
+seq_floor_warmup_epochs: 20
 batch_size_per_gpu: 14
-epochs: 1000
+grad_accum: 1
+epochs: 800
 steps_per_epoch: 1000
-ckpt_interval: 10
 
-# Collection: retain exploration without V1A's temperature-3 tail.
+# Raw policy weights are cheap and useful for H2H selection.  Full Accelerate
+# states (optimizer/scheduler/RNG) are much larger and are saved only every 100.
+ckpt_interval: 25
+full_state_ckpt_interval: 100
+mixed_precision: "no"
+
 lanes: 128
 n_workers: 8
 train_timesteps_per_epoch: 500
 temp_low: 1.0
 temp_high: 2.25
 
-# Roughly 1000 games per validation anchor in expectation.
-val_timesteps: 5000
+# Health-check validator only; checkpoint selection should use explicit balanced
+# H2H sweeps.  This is environment timesteps per lane, not a game count.
+val_timesteps: 2000
 val_interval: 10
