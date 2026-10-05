@@ -40,9 +40,10 @@ grad_accum: 1
 epochs: 800
 steps_per_epoch: 1000
 
-# Raw policy weights are cheap and useful for H2H selection.  Full Accelerate
-# states (optimizer/scheduler/RNG) are much larger and are saved only every 100.
-ckpt_interval: 25
+# The callback fires every 5 epochs so the in-memory model can play a 50-game
+# tournament against TaurosV0@62 and log the win rate.  The V1B checkpoint hook
+# still persists raw policies only every 25 epochs and full states every 100.
+ckpt_interval: 5
 full_state_ckpt_interval: 100
 mixed_precision: "no"
 
