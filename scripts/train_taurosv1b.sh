@@ -95,10 +95,26 @@ if [ -n "${RESUME_EPOCH}" ]; then
     echo "Found full state epoch ${RESUME_EPOCH}, but matching raw policy is missing: ${RESUME_POLICY}" >&2
     exit 1
   fi
+
+  # Delete immutable numbered policies from the abandoned future branch.  This
+  # is especially important in phase F: discover:true self-play would otherwise
+  # rediscover policies newer than the optimizer state we are rolling back to.
+  if [ -d "${POLICY_DIR}" ]; then
+    shopt -s nullglob
+    for policy_path in "${POLICY_DIR}"/policy_epoch_*.pt; do
+      base="$(basename "${policy_path}")"
+      policy_epoch="${base#policy_epoch_}"
+      policy_epoch="${policy_epoch%.pt}"
+      if [[ "${policy_epoch}" =~ ^[0-9]+$ ]] && [ "${policy_epoch}" -gt "${RESUME_EPOCH}" ]; then
+        rm -f "${policy_path}"
+      fi
+    done
+    shopt -u nullglob
+  fi
+
   mkdir -p "${LATEST_DIR}"
-  # Critical consistency fix: latest may be newer than the sparse full optimizer
-  # state after a crash.  Roll it back to the exact resumable epoch before the
-  # collector starts reading it.
+  # latest may be newer than the sparse full optimizer state after a crash.  Roll
+  # it back before the collector starts reading it.
   cp -f "${RESUME_POLICY}" "${LATEST_DIR}/policy.pt"
   COLLECTOR_INIT=(--base_weights "${RESUME_POLICY}")
   LEARNER_INIT=(--resume_training_state --resume_epoch "${RESUME_EPOCH}")
