@@ -1,15 +1,12 @@
-"""Periodic TaurosV1B vs TaurosV0@62 tournament hook.
+"""Periodic TaurosV1B vs TaurosV0@62 tournament and resume hooks.
 
-Imported by the V1B E/F training gin files.  When the V1B online runner is the
-entrypoint, this module patches its checkpoint hook so every five learner epochs
-(after epoch 0) it pauses learning, plays exactly 50 single-lane games against
-TaurosV0@62, and logs the win rate to the same W&B/Accelerate tracker.
+Imported by the V1B E/F training gin files. Every five learner epochs (after
+epoch 0) the current in-memory policy plays exactly 50 single-lane games against
+TaurosV0@62 and logs the result to the same W&B/Accelerate tracker.
 
-The tournament uses the in-memory trainee.  It does not create a temporary policy
-checkpoint, so the 5-epoch monitoring cadence adds no persistent model storage.
-Persistent raw policies are still kept every 25 epochs and full Accelerate states
-every 100 epochs.  Evaluation RNG state is restored afterwards so monitoring does
-not perturb subsequent learner randomness.
+The hooks also restore non-tensor training counters that AMAGO's Accelerate state
+does not serialize. Evaluation RNG state is restored afterwards so monitoring is
+observational rather than an intervention in training.
 """
 
 from __future__ import annotations
@@ -40,7 +37,6 @@ TOURNAMENT_MAX_TIMESTEPS = 100_000
 
 
 def _force_reload_training_gin(experiment) -> None:
-    """Restore trainee gin after the tournament loads the V0 opponent."""
     config = getattr(experiment, "_gin_config", None)
     files = getattr(experiment, "_gin_config_files", None)
     if config is None or files is None:
@@ -77,8 +73,7 @@ def _run_v0_tournament(experiment) -> float:
     """Run exactly 50 sequential games and return V1B's win rate."""
     if experiment.accelerator.num_processes != 1:
         raise RuntimeError(
-            "The periodic V1B tournament currently requires a single learner "
-            "process. Launch V1B with one GPU/process or disable the hook."
+            "The periodic V1B tournament requires a single learner process."
         )
 
     rng_state = _capture_rng_state()
@@ -99,8 +94,6 @@ def _run_v0_tournament(experiment) -> float:
             battle_format="gen1ou",
             reward_function=trainee_spec.reward_function,
             val_opponent_kwargs={"opponent_config": opponent},
-            # One lane guarantees that AMAGO cannot overshoot the requested game
-            # count by several simultaneous terminations.
             lanes=1,
             n_workers=1,
             seed=10_000 + int(experiment.epoch),
@@ -112,8 +105,8 @@ def _run_v0_tournament(experiment) -> float:
             episodes=TOURNAMENT_GAMES,
         )
     finally:
-        # Opponent initialization clears/rebinds global gin.  Restore the trainee
-        # configuration before the next optimization step.
+        # Opponent initialization clears/rebinds global gin. Restore trainee
+        # configuration, RNG, and module mode before the next optimization step.
         _force_reload_training_gin(experiment)
         _restore_rng_state(rng_state)
         experiment.policy.train(was_training)
@@ -140,8 +133,6 @@ def _patched_save_checkpoint(self) -> None:
     epoch = int(self.epoch)
     main = self.accelerator.is_main_process
 
-    # Persistent policies: 0, 25, 50, ...  The tournament itself evaluates the
-    # live model and therefore needs no extra checkpoint at epochs 5/10/15/...
     if main and epoch % PERSISTENT_POLICY_INTERVAL == 0:
         path = os.path.join(
             self.ckpt_dir,
@@ -162,7 +153,6 @@ def _patched_save_checkpoint(self) -> None:
             safe_serialization=True,
         )
 
-    # Epoch 0 is useful as a checkpoint but is not "five epochs of E/F" yet.
     if epoch <= 0 or epoch % TOURNAMENT_INTERVAL != 0:
         return
 
@@ -186,15 +176,41 @@ def _patched_save_checkpoint(self) -> None:
     self.accelerator.wait_for_everyone()
 
 
+def _make_patched_load_checkpoint(original):
+    def _patched_load_checkpoint(self, epoch: int, resume_training_state: bool = False):
+        result = original(self, epoch, resume_training_state=resume_training_state)
+        if resume_training_state:
+            completed_epochs = int(epoch) + 1
+            batches_per_epoch = int(getattr(self, "train_batches_per_epoch", 0))
+            accum = max(int(getattr(self, "batches_per_update", 1)), 1)
+            completed_forward_calls = completed_epochs * batches_per_epoch
+            completed_updates = completed_forward_calls // accum
+            self.grad_update_counter = completed_updates
+
+            filt = getattr(self.policy, "fbc_filter_func", None)
+            if filt is not None and hasattr(filt, "_seq_step"):
+                # The 10k-entry percentile history is deliberately not serialized.
+                # It repopulates for seq_warmup (~200) calls, but the long floor
+                # warmup must not restart after every process failure.
+                filt._seq_step = max(
+                    int(getattr(filt, "_seq_step", 0)), completed_forward_calls
+                )
+        return result
+
+    return _patched_load_checkpoint
+
+
 def _install_patch() -> None:
-    # ``python -m metamon.rl.taurosv1b_online`` executes that file as __main__.
-    # Avoid importing the runner here: doing so from a gin import during ``-m``
-    # execution would execute the runner a second time.
+    # ``python -m metamon.rl.taurosv1b_online`` executes the runner as __main__.
+    # Avoid importing it here, which would execute/register the runner twice.
     for module_name in ("__main__", "metamon.rl.taurosv1b_online"):
         module = sys.modules.get(module_name)
         cls = getattr(module, "TaurosV1BOnlineExperiment", None) if module else None
         if cls is not None:
             cls.save_checkpoint = _patched_save_checkpoint
+            if not getattr(cls, "_v1b_load_checkpoint_patched", False):
+                cls.load_checkpoint = _make_patched_load_checkpoint(cls.load_checkpoint)
+                cls._v1b_load_checkpoint_patched = True
             return
 
 
