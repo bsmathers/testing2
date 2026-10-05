@@ -41,7 +41,7 @@ def main():
     )
     p.add_argument(
         "--train_team_set",
-        default="metamon/rl/configs/team_sets/mediumg1_train.yaml",
+        default="metamon/rl/configs/team_sets/taurosv1b_public_train.yaml",
     )
     p.add_argument("--lanes", type=int, default=128)
     p.add_argument("--n_workers", type=int, default=8)
