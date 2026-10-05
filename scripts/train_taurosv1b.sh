@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Safe launcher for the long TaurosV1B online phases.  Unlike scripts/train.sh,
+# Safe launcher for the long TaurosV1B online phases. Unlike scripts/train.sh,
 # cleanup is PID-scoped and never pkill's unrelated Metamon jobs.
 #
 # Initial run:
@@ -96,8 +96,8 @@ if [ -n "${RESUME_EPOCH}" ]; then
     exit 1
   fi
 
-  # Delete immutable numbered policies from the abandoned future branch. This is
-  # especially important in phase F: discover:true self-play would otherwise
+  # Delete immutable numbered policies from the abandoned future branch. This
+  # is especially important in phase F: discover:true self-play would otherwise
   # rediscover policies newer than the optimizer state we are rolling back to.
   if [ -d "${POLICY_DIR}" ]; then
     shopt -s nullglob
@@ -110,67 +110,6 @@ if [ -n "${RESUME_EPOCH}" ]; then
       fi
     done
     shopt -u nullglob
-  fi
-
-  # Tournament results newer than the full optimizer state belong to the same
-  # abandoned future branch and must not suppress re-evaluation after resume.
-  TOURN_DIR="${SAVE_DIR}/${RUN_NAME}/tournaments_vs_taurosv0_62"
-  TOURN_STATE="${TOURN_DIR}/state.json"
-  if [ -f "${TOURN_STATE}" ]; then
-    "${PYTHON_BIN}" - "${TOURN_DIR}" "${RESUME_EPOCH}" <<'PY'
-import json, pathlib, shutil, sys
-root = pathlib.Path(sys.argv[1])
-resume = int(sys.argv[2])
-state_path = root / "state.json"
-try:
-    state = json.loads(state_path.read_text())
-except Exception:
-    state = {}
-completed = sorted(int(e) for e in state.get("completed_epochs", []) if int(e) <= resume)
-# Reconstruct the best retained result at/before the resume point from each
-# epoch's append-only matchup result. This avoids preserving a best model from an
-# optimizer branch that no longer exists.
-best_epoch = None
-best_wr = None
-best_src = None
-for epoch in completed:
-    result_file = root / f"epoch_{epoch:04d}" / "matchup_results.jsonl"
-    if not result_file.exists():
-        continue
-    for line in result_file.read_text().splitlines():
-        try:
-            r = json.loads(line)
-            total = int(r.get("total_battles", 0))
-            if total <= 0:
-                continue
-            wr = int(r.get("policy_a_wins", 0)) / total
-        except Exception:
-            continue
-        if best_wr is None or wr > best_wr:
-            ckpt = root.parent / "ckpts" / "policy_weights" / f"policy_epoch_{epoch}.pt"
-            if ckpt.exists():
-                best_epoch, best_wr, best_src = epoch, wr, ckpt
-for p in root.glob("epoch_*"):
-    try:
-        epoch = int(p.name.split("_")[-1])
-    except ValueError:
-        continue
-    if epoch > resume:
-        shutil.rmtree(p, ignore_errors=True)
-best_path = root / "best_policy.pt"
-if best_src is not None:
-    shutil.copy2(best_src, best_path)
-elif best_path.exists():
-    best_path.unlink()
-state = {
-    "completed_epochs": completed,
-    "best_epoch": best_epoch,
-    "best_winrate": best_wr,
-}
-tmp = state_path.with_suffix(".tmp")
-tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
-tmp.replace(state_path)
-PY
   fi
 
   mkdir -p "${LATEST_DIR}"
