@@ -27,7 +27,8 @@ taurosv1b_filter.RobustAdvantageFilter.clip_weights_high = 100.
 taurosv1b_filter.RobustAdvantageFilter.seq_p_low = 0.2
 taurosv1b_filter.RobustAdvantageFilter.seq_p_full = 0.7
 taurosv1b_filter.RobustAdvantageFilter.seq_floor = 0.1
-taurosv1b_filter.RobustAdvantageFilter.seq_floor_warmup_steps = 100_000
+# 10 learner epochs at 1000 optimizer updates/epoch.
+taurosv1b_filter.RobustAdvantageFilter.seq_floor_warmup_steps = 10_000
 taurosv1b_filter.RobustAdvantageFilter.seq_buffer_size = 10000
 taurosv1b_filter.RobustAdvantageFilter.seq_warmup = 200
 
