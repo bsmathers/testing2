@@ -4,7 +4,7 @@ This intentionally leaves ``taurosv1b_pretrain`` optimization semantics untouche
 It launches the existing trainer as a child process, mirrors stdout/stderr to the
 terminal, parses its once-per-epoch summaries, and records them to Weights & Biases.
 
-A-D are stage-resumable rather than mid-stage-resumable.  Therefore each retry is
+A-D are stage-resumable rather than mid-stage-resumable. Therefore each retry is
 logged as a new W&B run (under the same experiment group) instead of attempting to
 resume an earlier W&B step sequence while the underlying optimizer restarts.
 """
@@ -91,7 +91,13 @@ def main() -> None:
 
     phase = known.phase
     group = os.environ.get("WANDB_RUN_GROUP")
-    tags = [t for t in os.environ.get("WANDB_TAGS", "taurosv1b,distilled-public").split(",") if t]
+    tags = [
+        tag
+        for tag in os.environ.get(
+            "WANDB_TAGS", "taurosv1b,distilled-public"
+        ).split(",")
+        if tag
+    ]
 
     run = wandb.init(
         project=known.wandb_project,
@@ -110,8 +116,11 @@ def main() -> None:
     wandb.define_metric("pretrain/global_epoch")
     wandb.define_metric("pretrain/*", step_metric="pretrain/global_epoch")
 
+    # -u is important because stdout is piped through this process; without it,
+    # child epoch summaries can be block-buffered and appear in W&B much later.
     cmd = [
         sys.executable,
+        "-u",
         "-m",
         "metamon.rl.taurosv1b_pretrain",
         "--phase",
