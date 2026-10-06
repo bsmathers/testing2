@@ -8,7 +8,9 @@ only actor-head weights.
 """
 from __future__ import annotations
 
+import argparse
 import copy
+import os
 from typing import Optional
 
 import gin
@@ -148,3 +150,30 @@ class KLAnchoredMultiTaskAgent(MultiTaskAgent):
             )
             self.update_info["KL Anchor Forward Step"] = self._kl_forward_step.detach()
         return total_loss
+
+
+def export_online_checkpoint(source: str, destination: str) -> None:
+    """Strip KL-anchor-only state for handoff to the ordinary Phase-F agent."""
+    state = torch.load(source, map_location="cpu")
+    clean = {
+        k: v
+        for k, v in state.items()
+        if not k.startswith("_kl_anchor_") and k != "_kl_forward_step"
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+    torch.save(clean, destination)
+
+
+def _main() -> None:
+    parser = argparse.ArgumentParser(description="TaurosV1B KL checkpoint utilities")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    export = sub.add_parser("export-online")
+    export.add_argument("--input", required=True)
+    export.add_argument("--output", required=True)
+    args = parser.parse_args()
+    if args.cmd == "export-online":
+        export_online_checkpoint(args.input, args.output)
+
+
+if __name__ == "__main__":
+    _main()
