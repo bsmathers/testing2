@@ -90,9 +90,20 @@ def main() -> None:
         "--wandb_entity",
         default=os.environ.get("METAMON_WANDB_ENTITY") or None,
     )
+    parser.add_argument(
+        "--global_epoch_offset",
+        type=int,
+        default=None,
+        help="Override the default W&B global-epoch offset for this phase.",
+    )
     known, forwarded = parser.parse_known_args()
 
     phase = known.phase
+    global_epoch_offset = (
+        _PHASE_OFFSETS[phase]
+        if known.global_epoch_offset is None
+        else known.global_epoch_offset
+    )
     group = os.environ.get("WANDB_RUN_GROUP")
     tags = [
         tag
@@ -112,7 +123,7 @@ def main() -> None:
         config={
             "phase": phase,
             "phase_epochs": _PHASE_EPOCHS[phase],
-            "global_epoch_offset": _PHASE_OFFSETS[phase],
+            "global_epoch_offset": global_epoch_offset,
             "trainer_module": "metamon.rl.taurosv1b_pretrain_accel",
         },
     )
@@ -152,7 +163,7 @@ def main() -> None:
             if parsed is None:
                 continue
             phase_epoch, metrics = parsed
-            global_epoch = _PHASE_OFFSETS[phase] + phase_epoch
+            global_epoch = global_epoch_offset + phase_epoch
             metrics.update(
                 {
                     "pretrain/global_epoch": global_epoch,
