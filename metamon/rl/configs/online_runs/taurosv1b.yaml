@@ -15,7 +15,7 @@ base_model: TaurosV1A
 battle_format: gen1ou
 
 dataset_config: online_selfplay_taurosv1b.yaml
-train_gin_config: grouped_v2_large_robust_awr_beta2.gin
+train_gin_config: grouped_v2_large_robust_awr_beta2_kl50.gin
 train_pool: metamon/rl/configs/opponent_pools/hl_gen1ou_taurosv1b.yaml
 # Public/reproducible team set. Do not use mediumg1_train here on a fresh host:
 # it references local-only expert/expert_curated2 directories.
@@ -34,8 +34,10 @@ online_weight: 0.60
 online_anneal_start_epoch: 0
 online_anneal_end_epoch: 400
 
-# Preserve the C policy early: start at 5e-6 and linearly reach 8e-5
-# after 100 learner epochs (= 100,000 optimizer updates).
+# Preserve the C policy early in two ways:
+#   1) LR starts at 5e-6 and reaches 8e-5 over 100 learner epochs.
+#   2) KL(pi_C || pi_theta) starts at coefficient 1.0 and linearly reaches 0
+#      over the first 50 learner epochs (configured in the KL50 gin file).
 learning_rate: 8.0e-5
 lr_warmup_start_lr: 5.0e-6
 lr_warmup_epochs: 100
