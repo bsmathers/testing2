@@ -376,8 +376,9 @@ def add_cli(parser):
         "--lr_warmup_epochs",
         type=float,
         default=20.0,
-        help="Linear LR warmup length in training-epoch units "
-        "(warmup_steps = this × steps_per_epoch × grad_accum).",
+        help="Linear LR warmup length in training-epoch units. Accelerate steps "
+        "the scheduler only on optimizer updates, so warmup_steps = "
+        "this × steps_per_epoch.",
     )
     parser.add_argument(
         "--seq_floor_warmup_epochs",
@@ -861,7 +862,11 @@ def create_online_experiment(
         ONLINE_RL_TRAIN_GIN,
     ]
     amago.cli_utils.use_config(config, gin_files, finalize=False)
-    lr_warmup_steps = int(round(steps_per_epoch * grad_accum * lr_warmup_epochs))
+    # AcceleratedScheduler advances only when the accumulated optimizer update
+    # actually runs. Therefore scheduler warmup is measured in optimizer updates,
+    # not microbatches; multiplying by grad_accum would make an N-epoch ramp last
+    # N * grad_accum epochs.
+    lr_warmup_steps = int(round(steps_per_epoch * lr_warmup_epochs))
     gin.bind_parameter("MetamonAMAGOExperiment.lr_warmup_steps", lr_warmup_steps)
     # Sequence-floor warmup is independent of LR warmup so a cold start can keep
     # the ISAdvantageFilter near-off longer. Falls back to lr_warmup_epochs.
