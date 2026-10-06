@@ -52,9 +52,9 @@ steps_per_epoch: 1000
 
 # The callback fires every 5 epochs so the in-memory model can play a 50-game
 # tournament against TaurosV0@62 and log the win rate. The V1B checkpoint hook
-# persists raw policies every 25 epochs and full states every 100.
+# persists raw policies every 25 epochs and full states every 25.
 ckpt_interval: 5
-full_state_ckpt_interval: 100
+full_state_ckpt_interval: 25
 mixed_precision: "no"
 
 lanes: 128
