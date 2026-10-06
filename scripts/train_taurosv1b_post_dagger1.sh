@@ -93,6 +93,8 @@ export WANDB_TAGS="${WANDB_TAGS:-taurosv1b,distilled-public}"
 export V1B_EXPERIMENT_ID="${EXPERIMENT_ID}"
 
 mkdir -p "${METAMON_SAVE_DIR}" "${METAMON_CACHE_DIR}"
+ONLINE_SAVE_DIR="${METAMON_SAVE_DIR}/lr1e5_online"
+mkdir -p "${ONLINE_SAVE_DIR}"
 
 PHASE_A="${PRETRAIN_DIR}/phase_a_300.pt"
 PHASE_B1="${PRETRAIN_DIR}/phase_b1_lr1e5.pt"
@@ -205,19 +207,20 @@ run_if_missing "${PHASE_D}" \
 
 stage "E — 800 epochs public-opponent online RL"
 if [ ! -f "${STAGE_DIR}/phase_e_lr1e5.done" ]; then
+  METAMON_SAVE_DIR="${ONLINE_SAVE_DIR}" \
   BASE_WEIGHTS="${PHASE_D}" \
   BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_e_lr1e5" \
   WANDB_RUN_ID="v1b-e-lr1e5-${EXPERIMENT_ID}" \
   WANDB_RESUME=allow \
     bash "${SCRIPT_DIR}/train_taurosv1b.sh" e --log
 
-  E_LATEST="${METAMON_SAVE_DIR}/taurosv1b_phase_e/ckpts/latest/policy.pt"
+  E_LATEST="${ONLINE_SAVE_DIR}/taurosv1b_phase_e/ckpts/latest/policy.pt"
   if [ ! -s "${E_LATEST}" ]; then
     echo "Phase E finished without latest policy: ${E_LATEST}" >&2
     exit 1
   fi
   cp -f "${E_LATEST}" "${PHASE_E_FINAL}"
-  touch "${STAGE_DIR}/phase_e.done"
+  touch "${STAGE_DIR}/phase_e_lr1e5.done"
 else
   echo "[skip] Phase E marked complete."
 fi
@@ -225,7 +228,7 @@ fi
 stage "F — 800 epochs recency-weighted V1B self-play"
 if [ ! -f "${STAGE_DIR}/phase_f_lr1e5.done" ]; then
   if [ ! -s "${PHASE_E_FINAL}" ]; then
-    E_LATEST="${METAMON_SAVE_DIR}/taurosv1b_phase_e/ckpts/latest/policy.pt"
+    E_LATEST="${ONLINE_SAVE_DIR}/taurosv1b_phase_e/ckpts/latest/policy.pt"
     if [ ! -s "${E_LATEST}" ]; then
       echo "Missing Phase-E final policy." >&2
       exit 1
@@ -233,6 +236,7 @@ if [ ! -f "${STAGE_DIR}/phase_f_lr1e5.done" ]; then
     cp -f "${E_LATEST}" "${PHASE_E_FINAL}"
   fi
 
+  METAMON_SAVE_DIR="${ONLINE_SAVE_DIR}" \
   BASE_WEIGHTS="${PHASE_E_FINAL}" \
   BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_f_lr1e5" \
   PHASE_F_ARCHIVE_DIR="${F_ARCHIVE_DIR}" \
@@ -241,13 +245,13 @@ if [ ! -f "${STAGE_DIR}/phase_f_lr1e5.done" ]; then
   WANDB_RESUME=allow \
     bash "${SCRIPT_DIR}/train_taurosv1b.sh" f --log
 
-  F_LATEST="${METAMON_SAVE_DIR}/taurosv1b_phase_f/ckpts/latest/policy.pt"
+  F_LATEST="${ONLINE_SAVE_DIR}/taurosv1b_phase_f/ckpts/latest/policy.pt"
   if [ ! -s "${F_LATEST}" ]; then
     echo "Phase F finished without latest policy: ${F_LATEST}" >&2
     exit 1
   fi
   cp -f "${F_LATEST}" "${PHASE_F_FINAL}"
-  touch "${STAGE_DIR}/phase_f.done"
+  touch "${STAGE_DIR}/phase_f_lr1e5.done"
 else
   echo "[skip] Phase F marked complete."
 fi
