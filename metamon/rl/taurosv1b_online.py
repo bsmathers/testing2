@@ -383,6 +383,28 @@ def main() -> None:
                 action.required = False
     args = parser.parse_args()
 
+    # E/F rely on the periodic TaurosV0 monitor as a training health check.
+    # Install it explicitly here rather than relying only on the gin import side
+    # effect, and fail fast if someone launches a learner without W&B logging or
+    # changes the checkpoint cadence so the 5-epoch monitor would not fire.
+    if args.mode == "learn" and args.run_name in {"taurosv1b_phase_e", "taurosv1b_phase_f"}:
+        from metamon.rl import taurosv1b_tournament as v0_monitor
+
+        v0_monitor._install_patch()
+        if not args.log:
+            raise ValueError(
+                "TaurosV1B E/F learner requires --log so periodic TaurosV0 "
+                "tournament metrics are sent to W&B."
+            )
+        if args.ckpt_interval != v0_monitor.TOURNAMENT_INTERVAL:
+            raise ValueError(
+                "TaurosV1B E/F requires ckpt_interval="
+                f"{v0_monitor.TOURNAMENT_INTERVAL} so the periodic TaurosV0 "
+                "tournament runs every five epochs."
+            )
+        if TaurosV1BOnlineExperiment.save_checkpoint is not v0_monitor._patched_save_checkpoint:
+            raise RuntimeError("TaurosV0 tournament checkpoint hook was not installed.")
+
     if args.ckpt_interval <= 0:
         raise ValueError("--ckpt_interval must be positive")
     if args.full_state_ckpt_interval > 0 and args.full_state_ckpt_interval % args.ckpt_interval:
