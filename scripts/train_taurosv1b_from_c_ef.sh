@@ -96,7 +96,9 @@ if [ ! -f "${STAGE_DIR}/phase_e_from_c_direct_kl50.done" ] || [ ! -s "${PHASE_E_
     echo "Phase E finished without latest policy: ${E_LATEST}" >&2
     exit 1
   fi
-  cp -f "${E_LATEST}" "${PHASE_E_FINAL}"
+  "${PYTHON_BIN:-python3}" -m metamon.rl.taurosv1b_kl export-online \
+    --input "${E_LATEST}" \
+    --output "${PHASE_E_FINAL}"
   touch "${STAGE_DIR}/phase_e_from_c_direct_kl50.done"
 else
   echo "[skip] Phase E marked complete."
@@ -110,7 +112,9 @@ if [ ! -f "${STAGE_DIR}/phase_f_from_c_direct_kl50.done" ] || [ ! -s "${PHASE_F_
       echo "Missing Phase-E final policy." >&2
       exit 1
     fi
-    cp -f "${E_LATEST}" "${PHASE_E_FINAL}"
+    "${PYTHON_BIN:-python3}" -m metamon.rl.taurosv1b_kl export-online \
+      --input "${E_LATEST}" \
+      --output "${PHASE_E_FINAL}"
   fi
 
   METAMON_SAVE_DIR="${ONLINE_SAVE_DIR}" \
