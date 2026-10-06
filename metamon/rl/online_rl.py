@@ -901,6 +901,11 @@ def create_online_experiment(
         "MetamonAMAGOExperiment.lr_warmup_steps": lr_warmup_steps,
         "custom_agent.ISAdvantageFilter.seq_floor_warmup_steps": seq_floor_warmup_steps,
     }
+    if mode == "collect" and os.environ.get("METAMON_CPU_COLLECTOR") == "1":
+        from metamon.rl.cpu_attention import CPUSlidingWindowAttention
+        gin_extra_bindings[
+            "amago.nets.traj_encoders.TformerTrajEncoder.attention_type"
+        ] = CPUSlidingWindowAttention
     mirror_online_experiment_gin_bindings()
     gin.finalize()
 
