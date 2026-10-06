@@ -140,12 +140,24 @@ def policy_kd_loss(student, teacher: PolicyOnlyTeacher, batch) -> torch.Tensor:
 
 def _extract_policy(model_name: str, checkpoint: int, weights: Optional[str] = None):
     spec = get_pretrained_model(model_name)
+    print(
+        "V1B initialization:\n"
+        f"  architecture descriptor: {model_name}\n"
+        f"  architecture checkpoint: {checkpoint} "
+        + ("(untrained base; no pretrained weights loaded)" if checkpoint == 0 else "")
+    )
+    if weights is not None:
+        print(f"  actual input weights: {os.path.abspath(weights)}")
     exp = spec.initialize_agent(checkpoint=checkpoint, log=False)
     policy = exp.policy
     if weights is not None:
         state = torch.load(weights, map_location="cpu")
         policy.load_state_dict(state, strict=True)
         policy.on_checkpoint_loaded(is_resume=False)
+        print(
+            "  loaded input weights successfully with strict=True: "
+            f"{os.path.abspath(weights)}"
+        )
     # The placeholder Experiment/optimizer are not used by this trainer.  The
     # policy remains a normal nn.Module after unwrapping.
     del exp
