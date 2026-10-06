@@ -43,15 +43,19 @@ LANES="${LANES:-128}"
 DSET_MIN_SIZE="${DSET_MIN_SIZE:-5000}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-# CPU-only replay sharding.  On the target host nproc=16, so defaults are
-# 4 independent collectors x 4 CPU threads each, with 32 lanes per shard.
-TOTAL_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 16)
-COLLECTOR_SHARDS="${COLLECTOR_SHARDS:-4}"
+# CPU-only replay sharding.  The target host has 24 CPUs; reserve 4 for the
+# learner/system and use 20 for collection by default.
+TOTAL_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 24)
+COLLECTOR_CPUS="${COLLECTOR_CPUS:-20}"
+if [ "${COLLECTOR_CPUS}" -gt "${TOTAL_CPUS}" ]; then
+  COLLECTOR_CPUS="${TOTAL_CPUS}"
+fi
+COLLECTOR_SHARDS="${COLLECTOR_SHARDS:-5}"
 if [ "${COLLECTOR_SHARDS}" -lt 1 ]; then
   echo "COLLECTOR_SHARDS must be >= 1" >&2
   exit 2
 fi
-COLLECTOR_THREADS_PER_SHARD="${COLLECTOR_THREADS_PER_SHARD:-$(( (TOTAL_CPUS + COLLECTOR_SHARDS - 1) / COLLECTOR_SHARDS ))}"
+COLLECTOR_THREADS_PER_SHARD="${COLLECTOR_THREADS_PER_SHARD:-$(( (COLLECTOR_CPUS + COLLECTOR_SHARDS - 1) / COLLECTOR_SHARDS ))}"
 COLLECTOR_LANES_PER_SHARD="${COLLECTOR_LANES_PER_SHARD:-$(( (LANES + COLLECTOR_SHARDS - 1) / COLLECTOR_SHARDS ))}"
 COLLECTOR_N_WORKERS_PER_SHARD="${COLLECTOR_N_WORKERS_PER_SHARD:-1}"
 COLLECTOR_SEED_BASE="${COLLECTOR_SEED_BASE:-100000}"
@@ -210,7 +214,7 @@ start_collectors() {
     COLLECTOR_PIDS+=("$!")
   done
   echo "Started ${COLLECTOR_SHARDS} CPU-only collector shards: ${COLLECTOR_PIDS[*]}"
-  echo "  threads/shard=${COLLECTOR_THREADS_PER_SHARD}, lanes/shard=${COLLECTOR_LANES_PER_SHARD}, workers/shard=${COLLECTOR_N_WORKERS_PER_SHARD}"
+  echo "  collector_cpus=${COLLECTOR_CPUS}/${TOTAL_CPUS}, threads/shard=${COLLECTOR_THREADS_PER_SHARD}, lanes/shard=${COLLECTOR_LANES_PER_SHARD}, workers/shard=${COLLECTOR_N_WORKERS_PER_SHARD}"
 }
 
 check_collectors() {
