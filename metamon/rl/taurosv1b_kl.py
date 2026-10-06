@@ -51,6 +51,15 @@ class KLAnchoredMultiTaskAgent(MultiTaskAgent):
     def _copy(dst, src) -> None:
         dst.load_state_dict(src.state_dict(), strict=True)
         dst.requires_grad_(False)
+        dst.eval()
+
+    def train(self, mode: bool = True):
+        # The anchor must remain deterministic even when the online agent enters
+        # training mode; otherwise dropout would make the KL target itself move.
+        result = super().train(mode)
+        for name in _ANCHOR_MODULES:
+            getattr(self, name).eval()
+        return result
 
     def load_state_dict(self, state_dict, strict=True, **kwargs):
         has_anchor = any(k.startswith("_kl_anchor_") for k in state_dict)
@@ -73,6 +82,7 @@ class KLAnchoredMultiTaskAgent(MultiTaskAgent):
             self._kl_forward_step.zero_()
         for name in _ANCHOR_MODULES:
             getattr(self, name).requires_grad_(False)
+            getattr(self, name).eval()
 
     def _anchor_dist(self, batch):
         straight = {k: batch.obs[k] for k in self.pass_obs_keys_to_actor}
