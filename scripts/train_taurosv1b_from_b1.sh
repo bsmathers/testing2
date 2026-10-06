@@ -5,8 +5,8 @@ set -euo pipefail
 #   phase_b1_lr1e5.pt -> C -> D -> E -> F
 #
 # DAgger2 and B2 are deliberately skipped. C/D train on the existing public
-# replay mixture plus DAgger1 only. C and D use fixed eta=1e-6 for 200 epochs
-# each, with no learning-rate warmup. E/F remain fixed at eta=1e-5.
+# replay mixture plus DAgger1 only. C uses fixed eta=1e-6 for 60 epochs and
+# D uses fixed eta=1e-6 for 200 epochs, with no learning-rate warmup. E/F use eta=8e-5.
 #
 # Typical use:
 #   bash scripts/train_taurosv1b_from_b1.sh
@@ -133,10 +133,10 @@ fi
 echo "Starting C/D/E/F from completed B1:"
 echo "  actor:   ${PHASE_B1}"
 echo "  DAgger1: ${D1_COUNT} replays"
-echo "  LR rule: C/D fixed eta=1e-6 for 200 epochs each; E/F fixed eta=1e-5"
+echo "  LR rule: C eta=1e-6 for 60 epochs; D eta=1e-6 for 200 epochs; E/F eta=8e-5"
 echo "  skipped: DAgger2, B2"
 
-stage "C — 200 epochs critic-only warmup at eta=1e-6"
+stage "C — 60 epochs critic-only warmup at eta=1e-6"
 run_if_missing "${PHASE_C}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase c \
@@ -150,7 +150,7 @@ stage "D — 200 epochs shared-representation critic/KL bridge at eta=1e-6"
 run_if_missing "${PHASE_D}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase d \
-    --global_epoch_offset 550 \
+    --global_epoch_offset 410 \
     "${PRETRAIN_ARGS[@]}" \
     --input_weights "${PHASE_C}" \
     --dagger1_dir "${DAGGER1_DIR}" \
