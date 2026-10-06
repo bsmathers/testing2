@@ -6,9 +6,9 @@ import metamon.rl.taurosv1b_kl
 # Phase E from C with an explicit policy-distribution trust region.
 MetamonAMAGOExperiment.agent_type = @taurosv1b_kl.KLAnchoredMultiTaskAgent
 taurosv1b_kl.KLAnchoredMultiTaskAgent.kl_coeff = 1.0
-# Phase E uses 1000 optimizer updates/epoch and grad_accum=2, so forward() is
-# called 2000 times/epoch.  50 epochs -> 100,000 microbatches.
-taurosv1b_kl.KLAnchoredMultiTaskAgent.kl_anneal_steps = 100_000
+# Phase E uses 1000 optimizer updates/epoch and grad_accum=3, so forward() is
+# called 3000 times/epoch.  50 epochs -> 150,000 microbatches.
+taurosv1b_kl.KLAnchoredMultiTaskAgent.kl_anneal_steps = 150_000
 
 agent.Agent.reward_multiplier = 10.
 agent.MultiTaskAgent.reward_multiplier = 10.
