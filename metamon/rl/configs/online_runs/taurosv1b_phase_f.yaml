@@ -1,8 +1,8 @@
 # TaurosV1B phase F: 800 epochs of refinement with gated self-play.
 #
-# The end-to-end launcher enters F after E completes. The dynamic self-play slice
-# begins empty and safely falls back to the frozen public rows until phase-F V1B
-# checkpoints appear on disk.
+# The end-to-end launcher enters F after E completes. The launcher seeds
+# phase-F latest/policy.pt from the final E policy, so the dynamic self-play slice
+# is available during the initial FIFO prefill and then tracks evolving F weights.
 
 run_name: taurosv1b_phase_f
 base_model: TaurosV1A
