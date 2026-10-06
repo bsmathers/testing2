@@ -26,6 +26,9 @@ online_anneal_end_epoch: 0
 
 learning_rate: 8.0e-5
 lr_warmup_epochs: 0
+# F starts from a mature E policy, so no LR ramp. Restore the intended short
+# sequence-filter ramp independently of LR warmup.
+seq_floor_warmup_epochs: 10
 # Keep the same effective batch (14 trajectories/update) while cutting peak
 # learner activation memory roughly in half. This is required when the async
 # collector and learner share a 16 GB GPU.
