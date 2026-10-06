@@ -58,6 +58,21 @@ if [ "${DEFAULT_N_WORKERS}" -gt 8 ]; then
 fi
 N_WORKERS="${N_WORKERS:-${DEFAULT_N_WORKERS}}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+# Shared-GPU admission control.  Budgets are reservations, not targets: a job
+# enters CUDA only after the FIFO queue can fit its reservation under total VRAM
+# minus the safety margin.  Collector runs are deliberately one-epoch bursts so
+# they release their reservation between bursts; this lets queued tournaments
+# run before the collector re-enters.
+GPU_DEVICE="${METAMON_GPU_DEVICE:-0}"
+GPU_SAFETY_MB="${METAMON_GPU_QUEUE_SAFETY_MB:-1536}"
+LEARNER_GPU_BUDGET_MB="${LEARNER_GPU_BUDGET_MB:-7200}"
+COLLECTOR_GPU_BUDGET_MB="${COLLECTOR_GPU_BUDGET_MB:-6000}"
+TOURNAMENT_GPU_BUDGET_MB="${TOURNAMENT_GPU_BUDGET_MB:-3000}"
+export METAMON_GPU_DEVICE="${GPU_DEVICE}"
+export METAMON_GPU_QUEUE_SAFETY_MB="${GPU_SAFETY_MB}"
+export TOURNAMENT_GPU_BUDGET_MB
+
 PHASE_F_ARCHIVE_DIR="${PHASE_F_ARCHIVE_DIR:-${REPO_DIR}/taurosv1b_phase_f_replay_archive}"
 PHASE_F_ARCHIVE_MAX="${PHASE_F_ARCHIVE_MAX:-2000000}"
 PHASE_F_ARCHIVE_POLL_SECONDS="${PHASE_F_ARCHIVE_POLL_SECONDS:-60}"
@@ -175,15 +190,30 @@ COLLECTOR_LOG="${LOG_DIR}/collector.log"
 LEARNER_LOG="${LOG_DIR}/learner.log"
 ARCHIVER_LOG="${LOG_DIR}/phase_f_replay_archive.log"
 
-"${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
-  --run_config "${CONFIG}" \
-  --mode collect \
-  --save_dir "${SAVE_DIR}" \
-  --buffer_dir "${BUFFER_DIR}" \
-  "${COLLECTOR_INIT[@]}" \
-  --lanes "${LANES}" \
-  --n_workers "${N_WORKERS}" \
-  >"${COLLECTOR_LOG}" 2>&1 &
+collector_loop() {
+  while true; do
+    # One collector epoch per GPU lease.  Exiting the subprocess destroys its CUDA
+    # context, so queued tournament jobs get a real opportunity to acquire memory
+    # before the next collector burst.
+    "${PYTHON_BIN}" -m metamon.rl.gpu_job_queue run \
+      --kind collector \
+      --budget-mb "${COLLECTOR_GPU_BUDGET_MB}" \
+      --device "${GPU_DEVICE}" \
+      --safety-mb "${GPU_SAFETY_MB}" \
+      -- \
+      "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
+        --run_config "${CONFIG}" \
+        --mode collect \
+        --save_dir "${SAVE_DIR}" \
+        --buffer_dir "${BUFFER_DIR}" \
+        "${COLLECTOR_INIT[@]}" \
+        --lanes "${LANES}" \
+        --n_workers "${N_WORKERS}" \
+        --epochs 1 || return $?
+  done
+}
+
+collector_loop >"${COLLECTOR_LOG}" 2>&1 &
 COLLECTOR_PID=$!
 
 if [ "${IS_PHASE_F}" -eq 1 ]; then
@@ -221,14 +251,21 @@ while true; do
   sleep 5
 done
 printf '\nFIFO ready. Starting learner.\n'
+echo "GPU queue: learner=${LEARNER_GPU_BUDGET_MB} MiB collector=${COLLECTOR_GPU_BUDGET_MB} MiB tournament=+${TOURNAMENT_GPU_BUDGET_MB} MiB safety=${GPU_SAFETY_MB} MiB"
 
-"${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
-  --run_config "${CONFIG}" \
-  --mode learn \
-  --save_dir "${SAVE_DIR}" \
-  --buffer_dir "${BUFFER_DIR}" \
-  "${LEARNER_INIT[@]}" \
-  "${LEARNER_EXTRA[@]}" > >(tee "${LEARNER_LOG}") 2>&1 &
+"${PYTHON_BIN}" -m metamon.rl.gpu_job_queue run \
+  --kind learner \
+  --budget-mb "${LEARNER_GPU_BUDGET_MB}" \
+  --device "${GPU_DEVICE}" \
+  --safety-mb "${GPU_SAFETY_MB}" \
+  -- \
+  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
+    --run_config "${CONFIG}" \
+    --mode learn \
+    --save_dir "${SAVE_DIR}" \
+    --buffer_dir "${BUFFER_DIR}" \
+    "${LEARNER_INIT[@]}" \
+    "${LEARNER_EXTRA[@]}" > >(tee "${LEARNER_LOG}") 2>&1 &
 LEARNER_PID=$!
 
 # Monitor all asynchronous helpers for both E and F. A dead child that has not
