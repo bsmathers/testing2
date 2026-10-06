@@ -38,9 +38,9 @@ epochs: 800
 steps_per_epoch: 1000
 
 # Fire the monitored checkpoint hook every 5 epochs. The hook retains raw
-# policies only every 25 and full optimizer/RNG state only every 100.
+# policies only every 25 and full optimizer/RNG state every 25.
 ckpt_interval: 5
-full_state_ckpt_interval: 100
+full_state_ckpt_interval: 25
 mixed_precision: "no"
 
 lanes: 128
