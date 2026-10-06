@@ -112,10 +112,14 @@ LATEST_DIR="${RUN_DIR}/latest"
 RESUME_EPOCH=""
 if [ -d "${STATE_DIR}" ]; then
   RESUME_EPOCH=$(
-    find "${STATE_DIR}" -maxdepth 1 -mindepth 1 -type d -name "${RUN_NAME}_epoch_*" -print 2>/dev/null \
-      | sed -E "s#.*${RUN_NAME}_epoch_([0-9]+)$#\1#" \
-      | sort -n \
-      | tail -1
+    for state_path in "${STATE_DIR}/${RUN_NAME}_epoch_"*; do
+      [ -d "${state_path}" ] || continue
+      state_name="${state_path##*/}"
+      epoch="${state_name##*_epoch_}"
+      if [[ "${epoch}" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "${epoch}"
+      fi
+    done | sort -n | tail -1
   )
 fi
 
