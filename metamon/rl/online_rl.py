@@ -854,9 +854,6 @@ def create_online_experiment(
     }
     if pretrained.gin_overrides:
         config.update(pretrained.gin_overrides)
-    if mode == "collect" and os.environ.get("METAMON_CPU_COLLECTOR") == "1":
-        from metamon.rl.cpu_attention import CPUSlidingWindowAttention
-        config["amago.nets.traj_encoders.TformerTrajEncoder.attention_type"] = CPUSlidingWindowAttention
     if learning_rate is not None:
         config["MetamonAMAGOExperiment.learning_rate"] = learning_rate
     gin_files = [
@@ -865,6 +862,12 @@ def create_online_experiment(
         ONLINE_RL_TRAIN_GIN,
     ]
     amago.cli_utils.use_config(config, gin_files, finalize=False)
+    if mode == "collect" and os.environ.get("METAMON_CPU_COLLECTOR") == "1":
+        from metamon.rl.cpu_attention import CPUSlidingWindowAttention
+        gin.bind_parameter(
+            "amago.nets.traj_encoders.TformerTrajEncoder.attention_type",
+            CPUSlidingWindowAttention,
+        )
     # AcceleratedScheduler advances only when the accumulated optimizer update
     # actually runs. Therefore scheduler warmup is measured in optimizer updates,
     # not microbatches; multiplying by grad_accum would make an N-epoch ramp last
