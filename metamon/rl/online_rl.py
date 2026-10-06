@@ -875,6 +875,9 @@ def create_online_experiment(
         if seq_floor_warmup_epochs is not None
         else lr_warmup_epochs
     )
+    # The sequence filter advances once per forward/microbatch (not once per
+    # optimizer update), so unlike the LR scheduler this ramp must include
+    # grad_accum to preserve its duration in learner epochs.
     seq_floor_warmup_steps = int(
         round(steps_per_epoch * grad_accum * seq_warmup_epochs)
     )
