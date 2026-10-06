@@ -80,7 +80,7 @@ echo "  V0 monitor: 50 games vs TaurosV0@62 every 5 learner epochs"
 echo "  W&B metrics: tournament/v0_62_win_rate, tournament/v0_62_games, tournament/v0_62_binomial_stderr"
 
 stage "E — 900 epochs public-opponent online RL, initialized directly from C"
-if [ ! -f "${STAGE_DIR}/phase_e_from_c_direct.done" ]; then
+if [ ! -f "${STAGE_DIR}/phase_e_from_c_direct.done" ] || [ ! -s "${PHASE_E_FINAL}" ]; then
   METAMON_SAVE_DIR="${ONLINE_SAVE_DIR}" \
   BASE_WEIGHTS="${PHASE_C}" \
   BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_e_from_c_direct" \
@@ -100,7 +100,7 @@ else
 fi
 
 stage "F — 800 epochs recency-weighted V1B self-play"
-if [ ! -f "${STAGE_DIR}/phase_f_from_c_direct.done" ]; then
+if [ ! -f "${STAGE_DIR}/phase_f_from_c_direct.done" ] || [ ! -s "${PHASE_F_FINAL}" ]; then
   if [ ! -s "${PHASE_E_FINAL}" ]; then
     E_LATEST="${ONLINE_SAVE_DIR}/taurosv1b_phase_e/ckpts/latest/policy.pt"
     if [ ! -s "${E_LATEST}" ]; then
