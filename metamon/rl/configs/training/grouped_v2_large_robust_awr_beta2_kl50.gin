@@ -1,0 +1,41 @@
+import amago.agent
+import metamon.rl.taurosv1b_filter
+import metamon.rl.taurosv1b_tournament
+import metamon.rl.taurosv1b_kl
+
+# Phase E from C with an explicit policy-distribution trust region.
+MetamonAMAGOExperiment.agent_type = @taurosv1b_kl.KLAnchoredMultiTaskAgent
+taurosv1b_kl.KLAnchoredMultiTaskAgent.kl_coeff = 1.0
+# Phase E uses 1000 optimizer updates/epoch and grad_accum=3, so forward() is
+# called 3000 times/epoch.  50 epochs -> 150,000 microbatches.
+taurosv1b_kl.KLAnchoredMultiTaskAgent.kl_anneal_steps = 150_000
+
+agent.Agent.reward_multiplier = 10.
+agent.MultiTaskAgent.reward_multiplier = 10.
+agent.Agent.tau = .008
+agent.MultiTaskAgent.tau = .008
+agent.Agent.num_actions_for_value_in_critic_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_critic_loss = 4
+agent.Agent.num_actions_for_value_in_actor_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_actor_loss = 4
+agent.Agent.online_coeff = 0.0
+agent.MultiTaskAgent.online_coeff = 0.0
+agent.Agent.offline_coeff = 1.0
+agent.MultiTaskAgent.offline_coeff = 1.0
+agent.Agent.fbc_filter_func = @taurosv1b_filter.RobustAdvantageFilter()
+agent.MultiTaskAgent.fbc_filter_func = @taurosv1b_filter.RobustAdvantageFilter()
+taurosv1b_filter.RobustAdvantageFilter.beta = 2.0
+taurosv1b_filter.RobustAdvantageFilter.clip_weights_low = 1e-6
+taurosv1b_filter.RobustAdvantageFilter.clip_weights_high = 100.
+taurosv1b_filter.RobustAdvantageFilter.seq_p_low = 0.2
+taurosv1b_filter.RobustAdvantageFilter.seq_p_full = 0.7
+taurosv1b_filter.RobustAdvantageFilter.seq_floor = 0.1
+taurosv1b_filter.RobustAdvantageFilter.seq_floor_warmup_steps = 20_000
+taurosv1b_filter.RobustAdvantageFilter.seq_buffer_size = 10000
+taurosv1b_filter.RobustAdvantageFilter.seq_warmup = 200
+MetamonAMAGOExperiment.l2_coeff = 1e-4
+MetamonAMAGOExperiment.learning_rate = 5e-5
+MetamonAMAGOExperiment.grad_clip = 1.0
+agent.Agent.critic_loss_weight = 13.5
+agent.MultiTaskAgent.critic_loss_weight = 13.5
+MetamonAMAGOExperiment.lr_warmup_steps = 5000

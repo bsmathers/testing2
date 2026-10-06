@@ -15,7 +15,7 @@ base_model: TaurosV1A
 battle_format: gen1ou
 
 dataset_config: online_selfplay_taurosv1b.yaml
-train_gin_config: grouped_v2_large_robust_awr_beta2.gin
+train_gin_config: grouped_v2_large_robust_awr_beta2_kl50.gin
 train_pool: metamon/rl/configs/opponent_pools/hl_gen1ou_taurosv1b.yaml
 # Public/reproducible team set. Do not use mediumg1_train here on a fresh host:
 # it references local-only expert/expert_curated2 directories.
@@ -34,19 +34,21 @@ online_weight: 0.60
 online_anneal_start_epoch: 0
 online_anneal_end_epoch: 400
 
-# Preserve the C policy early: start at 5e-6 and linearly reach 8e-5
-# after 100 learner epochs (= 100,000 optimizer updates).
+# Preserve the C policy early in two ways:
+#   1) LR starts at 5e-6 and reaches 8e-5 over 100 learner epochs.
+#   2) KL(pi_C || pi_theta) starts at coefficient 1.0 and linearly reaches 0
+#      over the first 50 learner epochs (configured in the KL50 gin file).
 learning_rate: 8.0e-5
 lr_warmup_start_lr: 5.0e-6
 lr_warmup_epochs: 100
 # Keep the sequence-level advantage filter near-neutral while the critic/policy
 # adapt to online data. This is independent of the LR ramp.
 seq_floor_warmup_epochs: 20
-# Keep the same effective batch (14 trajectories/update) while cutting peak
-# learner activation memory roughly in half. This is required when the async
-# collector and learner share a 16 GB GPU.
-batch_size_per_gpu: 7
-grad_accum: 2
+# The KL anchor adds one frozen policy forward. Reduce the microbatch further
+# and preserve essentially the same effective batch (15 vs 14 trajectories/update)
+# to leave robust headroom on a 16 GB shared GPU.
+batch_size_per_gpu: 5
+grad_accum: 3
 epochs: 900
 steps_per_epoch: 1000
 
