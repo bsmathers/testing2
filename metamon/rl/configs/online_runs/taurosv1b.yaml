@@ -34,7 +34,7 @@ online_weight: 0.60
 online_anneal_start_epoch: 0
 online_anneal_end_epoch: 400
 
-learning_rate: 1.0e-5
+learning_rate: 8.0e-5
 lr_warmup_epochs: 0
 batch_size_per_gpu: 14
 grad_accum: 1

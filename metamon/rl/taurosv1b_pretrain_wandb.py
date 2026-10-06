@@ -22,7 +22,7 @@ from typing import Optional
 import wandb
 
 
-_PHASE_EPOCHS = {"a": 150, "b1": 50, "b2": 50, "c": 200, "d": 200}
+_PHASE_EPOCHS = {"a": 150, "b1": 50, "b2": 50, "c": 60, "d": 200}
 # Phase A is followed by a separate fixed-LR 150-epoch continuation logged by
 # taurosv1b_retrain_a_wandb, so downstream global epochs start at 300.
 _PHASE_OFFSETS = {"a": 0, "b1": 300, "b2": 350, "c": 400, "d": 450}
