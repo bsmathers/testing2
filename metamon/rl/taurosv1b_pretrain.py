@@ -7,7 +7,7 @@ A   150 epochs: public-data policy distillation from TaurosV0@62
 B1   50 epochs: 75% public / 25% first student-occupancy (DAgger) pile
 B2   50 epochs: 50% public / 25% DAgger-1 / 25% DAgger-2 (legacy path)
 C    60 epochs: critic-only warmup from B1, using public + DAgger-1 states
-D   200 epochs: joint critic + policy-KL bridge from C, using public + DAgger-1
+D   <=200 epochs: joint critic + policy-KL bridge from C; early stop after epoch 40 with patience 5
 
 One epoch is 1000 minibatches by default.  Teacher policy probabilities are
 computed on the fly, so persistent teacher-label storage is zero.
@@ -393,6 +393,8 @@ def train_bridge(
     batch_size: int,
     workers: int,
     device: torch.device,
+    early_stop_min_epochs: int,
+    early_stop_patience: int,
 ):
     _set_requires_grad(student.tstep_encoder, True)
     _set_requires_grad(student.traj_encoder, True)
@@ -408,6 +410,11 @@ def train_bridge(
     opt = _optimizer(params, phase_spec.lr)
     sched = _scheduler(opt, phase_spec.warmup_epochs * steps_per_epoch)
     loader = _loader(dataset, batch_size, workers)
+
+    best_loss = float("inf")
+    best_epoch = None
+    best_state = None
+    epochs_without_improvement = 0
 
     for epoch in range(phase_spec.epochs):
         lam = _bridge_lambda(epoch)
@@ -428,11 +435,44 @@ def train_bridge(
             student.soft_sync_targets()
             running += float(loss.detach())
             running_kd += float(kd.detach())
+        epoch_loss = running / max(steps_per_epoch, 1)
         print(
             f"Bridge epoch {epoch + 1:03d}/{phase_spec.epochs}: "
-            f"loss={running / max(steps_per_epoch, 1):.6f} "
+            f"loss={epoch_loss:.6f} "
             f"kd={running_kd / max(steps_per_epoch, 1):.6f} lambda={lam:.2f}"
         )
+
+        completed_epochs = epoch + 1
+        if early_stop_patience > 0 and completed_epochs >= early_stop_min_epochs:
+            if epoch_loss < best_loss:
+                best_loss = epoch_loss
+                best_epoch = completed_epochs
+                best_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in student.state_dict().items()
+                }
+                epochs_without_improvement = 0
+                print(
+                    f"Bridge early-stop best: epoch={best_epoch} "
+                    f"loss={best_loss:.6f}"
+                )
+            else:
+                epochs_without_improvement += 1
+                print(
+                    f"Bridge early-stop patience: "
+                    f"{epochs_without_improvement}/{early_stop_patience}"
+                )
+                if epochs_without_improvement >= early_stop_patience:
+                    print(
+                        f"Bridge early stopping at epoch {completed_epochs}; "
+                        f"restoring epoch {best_epoch} with loss={best_loss:.6f}"
+                    )
+                    break
+
+    if best_state is not None:
+        student.load_state_dict(best_state, strict=True)
+        del best_state
+        gc.collect()
 
     # Phase E loads a raw policy state_dict.  End with internally consistent
     # targets rather than carrying an arbitrary EMA lag across the run boundary.
@@ -452,6 +492,18 @@ def main():
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--dloader_workers", type=int, default=0)
     p.add_argument("--max_seq_len", type=int, default=128)
+    p.add_argument(
+        "--bridge_early_stop_min_epochs",
+        type=int,
+        default=40,
+        help="Phase-D minimum epochs before early stopping is evaluated.",
+    )
+    p.add_argument(
+        "--bridge_early_stop_patience",
+        type=int,
+        default=5,
+        help="Phase-D epochs without loss improvement before stopping; <=0 disables.",
+    )
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args()
 
@@ -496,6 +548,7 @@ def main():
         train_bridge(
             student, teacher, dataset, phase_spec,
             args.steps_per_epoch, args.batch_size, args.dloader_workers, device,
+            args.bridge_early_stop_min_epochs, args.bridge_early_stop_patience,
         )
 
     _save(student, args.output_weights)
