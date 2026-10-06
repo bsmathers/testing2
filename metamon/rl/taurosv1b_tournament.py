@@ -24,7 +24,6 @@ import numpy as np
 import torch
 
 from metamon.rl import online_rl as legacy
-from metamon.rl.gpu_job_queue import gpu_job_lease
 from metamon.rl.evaluate.opponent_pool import load_simple_opponent_pool
 from metamon.rl.metamon_to_amago import mirror_online_experiment_gin_bindings
 from metamon.rl.pretrained import get_pretrained_model
@@ -159,14 +158,7 @@ def _patched_save_checkpoint(self) -> None:
 
     self.accelerator.wait_for_everyone()
     if main:
-        budget_mb = int(os.environ.get("TOURNAMENT_GPU_BUDGET_MB", "3000"))
-        device = int(os.environ.get("METAMON_GPU_DEVICE", "0"))
-        # The learner already owns its base GPU reservation.  Tournament is an
-        # incremental reservation for the extra opponent policy/KV cache.  If a
-        # collector burst currently occupies that headroom, block here; FIFO
-        # ordering guarantees the tournament runs before the collector reacquires.
-        with gpu_job_lease("tournament", budget_mb=budget_mb, device=device):
-            win_rate = _run_v0_tournament(self)
+        win_rate = _run_v0_tournament(self)
         stderr = math.sqrt(max(win_rate * (1.0 - win_rate), 0.0) / TOURNAMENT_GAMES)
         self.log(
             {
