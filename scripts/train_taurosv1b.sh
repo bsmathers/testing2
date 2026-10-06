@@ -189,6 +189,7 @@ collector_shard_loop() {
     # CUDA is hidden at process creation, so neither the rollout policy nor
     # sampled opponent models can ever allocate GPU memory.
     CUDA_VISIBLE_DEVICES="" \
+    METAMON_CPU_COLLECTOR=1 \
     OMP_NUM_THREADS="${COLLECTOR_THREADS_PER_SHARD}" \
     MKL_NUM_THREADS="${COLLECTOR_THREADS_PER_SHARD}" \
     OPENBLAS_NUM_THREADS="${COLLECTOR_THREADS_PER_SHARD}" \

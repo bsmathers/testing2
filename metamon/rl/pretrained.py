@@ -220,6 +220,9 @@ class PretrainedModel:
         }
         if self.gin_overrides is not None:
             config.update(self.gin_overrides)
+        if os.environ.get("METAMON_CPU_COLLECTOR") == "1":
+            from metamon.rl.cpu_attention import CPUSlidingWindowAttention
+            config["amago.nets.traj_encoders.TformerTrajEncoder.attention_type"] = CPUSlidingWindowAttention
         return config
 
     def get_path_to_checkpoint(self, checkpoint: int) -> str:

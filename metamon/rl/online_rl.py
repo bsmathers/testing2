@@ -854,6 +854,9 @@ def create_online_experiment(
     }
     if pretrained.gin_overrides:
         config.update(pretrained.gin_overrides)
+    if mode == "collect" and os.environ.get("METAMON_CPU_COLLECTOR") == "1":
+        from metamon.rl.cpu_attention import CPUSlidingWindowAttention
+        config["amago.nets.traj_encoders.TformerTrajEncoder.attention_type"] = CPUSlidingWindowAttention
     if learning_rate is not None:
         config["MetamonAMAGOExperiment.learning_rate"] = learning_rate
     gin_files = [
