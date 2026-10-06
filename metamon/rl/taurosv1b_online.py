@@ -216,10 +216,67 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
 
     full_state_ckpt_interval: Optional[int] = 100
     requested_mixed_precision: str = "no"
+    requested_lr_warmup_start_lr: Optional[float] = None
 
     def __init__(self, *args, **kwargs):
         kwargs["mixed_precision"] = self.requested_mixed_precision
         super().__init__(*args, **kwargs)
+
+    def init_model(self) -> None:
+        """Build the policy with an optional nonzero linear LR warmup.
+
+        AMAGO's stock warmup always starts at zero. Phase E needs to preserve the
+        already-strong C policy, so it starts at 5e-6 and linearly reaches the
+        configured peak LR over the requested number of optimizer updates.
+        """
+        start_lr = self.requested_lr_warmup_start_lr
+        if start_lr is None:
+            super().init_model()
+            return
+
+        peak_lr = float(self.learning_rate)
+        start_lr = float(start_lr)
+        if peak_lr <= 0.0:
+            raise ValueError(f"learning_rate must be positive; got {peak_lr}")
+        if not (0.0 < start_lr <= peak_lr):
+            raise ValueError(
+                "lr_warmup_start_lr must satisfy 0 < start <= learning_rate; "
+                f"got start={start_lr}, peak={peak_lr}"
+            )
+        if int(self.lr_warmup_steps) <= 0 and start_lr != peak_lr:
+            raise ValueError(
+                "A nontrivial lr_warmup_start_lr requires lr_warmup_epochs > 0."
+            )
+
+        policy_kwargs = {
+            "tstep_encoder_type": self.tstep_encoder_type,
+            "traj_encoder_type": self.traj_encoder_type,
+            "obs_space": self.rl2_space["obs"],
+            "rl2_space": self.rl2_space["rl2"],
+            "action_space": self.train_envs.single_action_space,
+            "max_seq_len": self.max_seq_len,
+        }
+        policy = self.agent_type(**policy_kwargs)
+        optimizer = self.init_optimizer(policy)
+
+        start_factor = start_lr / peak_lr
+        warmup_steps = max(int(self.lr_warmup_steps), 1)
+
+        def lr_lambda(current_step: int) -> float:
+            if current_step >= warmup_steps:
+                return 1.0
+            progress = float(current_step) / float(warmup_steps)
+            return start_factor + (1.0 - start_factor) * progress
+
+        lr_schedule = torch.optim.lr_scheduler.LambdaLR(
+            optimizer=optimizer,
+            lr_lambda=lr_lambda,
+        )
+        self.policy_aclr, self.optimizer, self.lr_schedule = self.accelerator.prepare(
+            policy, optimizer, lr_schedule
+        )
+        self.accelerator.register_for_checkpointing(self.lr_schedule)
+        self.grad_update_counter = 0
 
     def save_checkpoint(self) -> None:
         """Called at ``ckpt_interval``; always save policy, full state sparsely."""
@@ -313,11 +370,18 @@ def build_ready_aware_online_dataset(
     )
 
 
-def _create_experiment_with_safe_class(*, mixed_precision: str, full_state_interval: int, **kwargs):
+def _create_experiment_with_safe_class(
+    *,
+    mixed_precision: str,
+    full_state_interval: int,
+    lr_warmup_start_lr: Optional[float],
+    **kwargs,
+):
     """Reuse the legacy experiment builder but substitute the audited subclass."""
     old_cls = legacy.MetamonOnlineExperiment
     TaurosV1BOnlineExperiment.requested_mixed_precision = mixed_precision
     TaurosV1BOnlineExperiment.full_state_ckpt_interval = full_state_interval
+    TaurosV1BOnlineExperiment.requested_lr_warmup_start_lr = lr_warmup_start_lr
     legacy.MetamonOnlineExperiment = TaurosV1BOnlineExperiment
     try:
         return legacy.create_online_experiment(**kwargs)
@@ -361,6 +425,13 @@ def add_cli(parser: ArgumentParser) -> ArgumentParser:
         choices=["no", "fp16", "bf16"],
         default="no",
         help="Accelerate mixed-precision mode. V1B defaults to FP32; bf16 must be smoke-tested.",
+    )
+    parser.add_argument(
+        "--lr_warmup_start_lr",
+        type=float,
+        default=None,
+        help="Optional nonzero starting LR for a linear warmup to --learning_rate. "
+        "If omitted, use AMAGO's ordinary zero-to-peak warmup.",
     )
     return parser
 
@@ -485,6 +556,7 @@ def main() -> None:
     experiment = _create_experiment_with_safe_class(
         mixed_precision=args.mixed_precision,
         full_state_interval=args.full_state_ckpt_interval,
+        lr_warmup_start_lr=args.lr_warmup_start_lr,
         mode=args.mode,
         run_name=args.run_name,
         save_dir=args.save_dir,
