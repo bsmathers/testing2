@@ -377,11 +377,10 @@ def train_critic_only(
 
 
 def _bridge_lambda(epoch: int) -> float:
-    if epoch < 5:
-        return 1.0
-    if epoch < 15:
-        return 0.5
-    return 0.25
+    # Phase D adapts the critic/shared representation while preserving the
+    # already V0-level actor. Keep the distillation anchor at full strength
+    # throughout D instead of decaying it.
+    return 1.0
 
 
 def train_bridge(
