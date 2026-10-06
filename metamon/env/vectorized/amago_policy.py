@@ -42,11 +42,17 @@ class AmagoLadderPolicyDriver:
             )
         self.hidden_state = hidden_state
 
-    def _snapshot_hidden(self, inactive: np.ndarray) -> Optional[dict]:
-        if not inactive.any():
+    # Keep partial-lane inference memory bounded.  A Tauros-sized transformer KV
+    # cache is large enough that cloning dozens of inactive lanes can OOM a 16 GB
+    # learner/collector GPU.  Eight lanes keeps temporary cache storage small while
+    # preserving a useful amount of batching.
+    _PARTIAL_HIDDEN_CHUNK = 8
+
+    def _snapshot_hidden(self, idx: np.ndarray) -> Optional[dict]:
+        """Save a *small* set of lanes before a full-batch policy forward."""
+        if len(idx) == 0:
             return None
         hs = self.hidden_state
-        idx = np.where(inactive)[0]
         return {
             "idx": idx,
             "seq_lens": hs.seq_lens[idx].clone(),
@@ -63,30 +69,92 @@ class AmagoLadderPolicyDriver:
         hs.key_cache.data[:, idx] = saved["key"]
         hs.val_cache.data[:, idx] = saved["val"]
 
-    def act(self, active: np.ndarray, obs_list: List[dict]) -> np.ndarray:
-        """Return action indices; only ``active`` lanes advance recurrent state."""
-        actions = np.zeros((self.num_lanes,), dtype=np.int64)
-        if not active.any():
-            return actions
+    @staticmethod
+    def _copy_hidden_lanes(src, dst, src_idxs: np.ndarray) -> None:
+        """Copy selected source lanes into a compact scratch hidden state."""
+        for dst_i, src_i in enumerate(src_idxs):
+            dst.seq_lens[dst_i].copy_(src.seq_lens[int(src_i)])
+            dst.key_cache.data[:, dst_i].copy_(src.key_cache.data[:, int(src_i)])
+            dst.val_cache.data[:, dst_i].copy_(src.val_cache.data[:, int(src_i)])
 
-        saved = self._snapshot_hidden(~active)
-        obs_batch = stack_obs_dicts(obs_list)
+    @staticmethod
+    def _copy_hidden_lanes_back(src, dst, dst_idxs: np.ndarray) -> None:
+        """Scatter a compact scratch hidden state back into selected lanes."""
+        for src_i, dst_i in enumerate(dst_idxs):
+            dst.seq_lens[int(dst_i)].copy_(src.seq_lens[src_i])
+            dst.key_cache.data[:, int(dst_i)].copy_(src.key_cache.data[:, src_i])
+            dst.val_cache.data[:, int(dst_i)].copy_(src.val_cache.data[:, src_i])
+
+    def _policy_act(self, obs_list: List[dict], lane_idxs: np.ndarray, hidden_state):
+        obs_batch = stack_obs_dicts([obs_list[int(i)] for i in lane_idxs])
         torch_obs = numpy_obs_to_torch(obs_batch, self.device)
-        rl2s = torch.from_numpy(self.rl2s).to(self.device).unsqueeze(1)
+        rl2s = (
+            torch.from_numpy(self.rl2s[lane_idxs]).to(self.device).unsqueeze(1)
+        )
         time_idxs = (
-            torch.from_numpy(self.step_counts).to(self.device).unsqueeze(1).unsqueeze(1)
+            torch.from_numpy(self.step_counts[lane_idxs])
+            .to(self.device)
+            .unsqueeze(1)
+            .unsqueeze(1)
         )
         with torch.no_grad():
-            act_out, self.hidden_state = self.policy.get_actions(
+            act_out, hidden_state = self.policy.get_actions(
                 obs=torch_obs,
                 rl2s=rl2s,
                 time_idxs=time_idxs,
-                hidden_state=self.hidden_state,
+                hidden_state=hidden_state,
                 sample=self.sample,
             )
-        self._restore_hidden(saved)
         out = act_out.squeeze(1).cpu().numpy().astype(np.int64).reshape(-1)
-        actions[active] = out[active]
+        return out, hidden_state
+
+    def act(self, active: np.ndarray, obs_list: List[dict]) -> np.ndarray:
+        """Return action indices; only ``active`` lanes advance recurrent state."""
+        actions = np.zeros((self.num_lanes,), dtype=np.int64)
+        active_idxs = np.flatnonzero(active)
+        if len(active_idxs) == 0:
+            return actions
+
+        # Fast path: all lanes advance, so there is nothing to preserve and no
+        # temporary KV-cache allocation is required.
+        if len(active_idxs) == self.num_lanes:
+            out, self.hidden_state = self._policy_act(
+                obs_list, active_idxs, self.hidden_state
+            )
+            actions[:] = out
+            return actions
+
+        inactive_idxs = np.flatnonzero(~active)
+
+        # If only a handful of lanes are inactive, a single full-batch forward is
+        # faster than compacting the active side.  Crucially, cap the snapshot at
+        # _PARTIAL_HIDDEN_CHUNK lanes so this path can never recreate the old
+        # hundreds-of-MiB transient allocation.
+        if len(inactive_idxs) <= self._PARTIAL_HIDDEN_CHUNK:
+            saved = self._snapshot_hidden(inactive_idxs)
+            all_idxs = np.arange(self.num_lanes, dtype=np.int64)
+            out, self.hidden_state = self._policy_act(
+                obs_list, all_idxs, self.hidden_state
+            )
+            self._restore_hidden(saved)
+            actions[active_idxs] = out[active_idxs]
+            return actions
+
+        # Otherwise run only active lanes, in bounded-size chunks.  AMAGO's
+        # TformerHiddenState has a preallocated per-batch KV cache, so initialize
+        # a compact scratch state and copy lanes one at a time (copy_ from a view)
+        # rather than materializing a large advanced-indexing gather.
+        for start in range(0, len(active_idxs), self._PARTIAL_HIDDEN_CHUNK):
+            chunk = active_idxs[start : start + self._PARTIAL_HIDDEN_CHUNK]
+            scratch = self.policy.traj_encoder.init_hidden_state(
+                len(chunk), self.device
+            )
+            self._copy_hidden_lanes(self.hidden_state, scratch, chunk)
+            out, scratch = self._policy_act(obs_list, chunk, scratch)
+            self._copy_hidden_lanes_back(scratch, self.hidden_state, chunk)
+            actions[chunk] = out
+            del scratch
+
         return actions
 
     def observe(self, lane_idx: int, reward: float, action_idx: int) -> None:
