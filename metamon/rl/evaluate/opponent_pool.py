@@ -65,6 +65,13 @@ def _discover_checkpoints(
             all_epochs.append(int(m.group(1)))
     all_epochs = sorted(set(all_epochs))
     if not all_epochs:
+        # Phase F seeds latest/policy.pt from the final Phase-E policy before
+        # collection starts. Honor include_latest even before the first numbered
+        # Phase-F checkpoint exists so self-play is present in the initial FIFO.
+        if include_latest:
+            latest_path = model.get_path_to_checkpoint(LATEST_CHECKPOINT)
+            if os.path.exists(latest_path):
+                return [LATEST_CHECKPOINT]
         return []
 
     if offsets:
