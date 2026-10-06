@@ -5,9 +5,9 @@ teacher critic tensors are ever written to disk:
 
 A   150 epochs: public-data policy distillation from TaurosV0@62
 B1   50 epochs: 75% public / 25% first student-occupancy (DAgger) pile
-B2   50 epochs: 50% public / 25% DAgger-1 / 25% DAgger-2
-C    50 epochs: critic-only warmup, actor + both encoders explicitly frozen
-D    25 epochs: joint critic + policy-KL representation bridge
+B2   50 epochs: 50% public / 25% DAgger-1 / 25% DAgger-2 (legacy path)
+C    50 epochs: critic-only warmup from B1, using public + DAgger-1 states
+D    25 epochs: joint critic + policy-KL bridge from C, using public + DAgger-1
 
 One epoch is 1000 minibatches by default.  Teacher policy probabilities are
 computed on the fly, so persistent teacher-label storage is zero.
@@ -54,8 +54,8 @@ PHASES = {
     "a": PhaseSpec(150, 1.0e-5, 0, 1.00, 0.00, 0.00),
     "b1": PhaseSpec(50, 1.0e-5, 0, 0.75, 0.25, 0.00),
     "b2": PhaseSpec(50, 1.0e-5, 0, 0.50, 0.25, 0.25),
-    "c": PhaseSpec(50, 1.0e-5, 0, 0.70, 0.15, 0.15),
-    "d": PhaseSpec(25, 1.0e-5, 0, 0.70, 0.15, 0.15),
+    "c": PhaseSpec(50, 1.0e-5, 0, 0.70, 0.30, 0.00),
+    "d": PhaseSpec(25, 1.0e-5, 0, 0.70, 0.30, 0.00),
 }
 
 
