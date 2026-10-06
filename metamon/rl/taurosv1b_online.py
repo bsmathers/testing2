@@ -374,7 +374,7 @@ def _create_experiment_with_safe_class(
     *,
     mixed_precision: str,
     full_state_interval: int,
-    lr_warmup_start_lr: Optional[float],
+    lr_warmup_start_lr: Optional[float] = None,
     **kwargs,
 ):
     """Reuse the legacy experiment builder but substitute the audited subclass."""
