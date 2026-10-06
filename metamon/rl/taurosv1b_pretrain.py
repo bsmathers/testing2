@@ -377,11 +377,10 @@ def train_critic_only(
 
 
 def _bridge_lambda(epoch: int) -> float:
-    if epoch < 5:
-        return 1.0
-    if epoch < 15:
-        return 0.5
-    return 0.25
+    # Phase D is a critic/representation bridge, not a policy-improvement phase.
+    # Keep the V0 policy anchor at full strength throughout so shared-encoder
+    # updates cannot freely degrade the already V0-level B1/C actor.
+    return 1.0
 
 
 def train_bridge(
