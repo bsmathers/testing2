@@ -48,12 +48,14 @@ class PhaseSpec:
     dagger2_weight: float
 
 
+# Project-wide rule: every optimization phase uses a fixed 1e-5 step size.
+# No learning-rate warmup/ramp is used anywhere in A-D.
 PHASES = {
-    "a": PhaseSpec(150, 1.0e-4, 10, 1.00, 0.00, 0.00),
-    "b1": PhaseSpec(50, 5.0e-5, 2, 0.75, 0.25, 0.00),
-    "b2": PhaseSpec(50, 3.0e-5, 2, 0.50, 0.25, 0.25),
-    "c": PhaseSpec(50, 1.0e-4, 2, 0.70, 0.15, 0.15),
-    "d": PhaseSpec(25, 2.5e-5, 1, 0.70, 0.15, 0.15),
+    "a": PhaseSpec(150, 1.0e-5, 0, 1.00, 0.00, 0.00),
+    "b1": PhaseSpec(50, 1.0e-5, 0, 0.75, 0.25, 0.00),
+    "b2": PhaseSpec(50, 1.0e-5, 0, 0.50, 0.25, 0.25),
+    "c": PhaseSpec(50, 1.0e-5, 0, 0.70, 0.15, 0.15),
+    "d": PhaseSpec(25, 1.0e-5, 0, 0.70, 0.15, 0.15),
 }
 
 
