@@ -7,7 +7,7 @@ A   150 epochs: public-data policy distillation from TaurosV0@62
 B1   50 epochs: 75% public / 25% first student-occupancy (DAgger) pile
 B2   50 epochs: 50% public / 25% DAgger-1 / 25% DAgger-2 (legacy path)
 C    60 epochs: critic-only warmup from B1, using public + DAgger-1 states
-D   200 epochs: joint critic + policy-KL bridge from C, using public + DAgger-1
+D   <=200 epochs: joint critic + policy-KL bridge from C; early stop after epoch 40 with patience 5
 
 One epoch is 1000 minibatches by default.  Teacher policy probabilities are
 computed on the fly, so persistent teacher-label storage is zero.
