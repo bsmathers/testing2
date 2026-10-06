@@ -5,8 +5,8 @@ set -euo pipefail
 #   phase_b1_lr1e5.pt -> C -> D -> E -> F
 #
 # DAgger2 and B2 are deliberately skipped. C/D train on the existing public
-# replay mixture plus DAgger1 only. Every optimization stage uses fixed eta=1e-5
-# with no learning-rate warmup.
+# replay mixture plus DAgger1 only. C and D use fixed eta=1e-6 for 200 epochs
+# each, with no learning-rate warmup. E/F remain fixed at eta=1e-5.
 #
 # Typical use:
 #   bash scripts/train_taurosv1b_from_b1.sh
@@ -73,14 +73,14 @@ export WANDB_TAGS="${WANDB_TAGS:-taurosv1b,distilled-public}"
 export V1B_EXPERIMENT_ID="${EXPERIMENT_ID}"
 
 mkdir -p "${METAMON_SAVE_DIR}" "${METAMON_CACHE_DIR}"
-ONLINE_SAVE_DIR="${METAMON_SAVE_DIR}/lr1e5_from_b1_online"
+ONLINE_SAVE_DIR="${METAMON_SAVE_DIR}/c1e6_d1e6_from_b1_online"
 mkdir -p "${ONLINE_SAVE_DIR}"
 
 PHASE_B1="${PRETRAIN_DIR}/phase_b1_lr1e5.pt"
-PHASE_C="${PRETRAIN_DIR}/phase_c_from_b1_lr1e5.pt"
-PHASE_D="${PRETRAIN_DIR}/phase_d_from_b1_lr1e5.pt"
-PHASE_E_FINAL="${PRETRAIN_DIR}/phase_e_from_b1_lr1e5_final.pt"
-PHASE_F_FINAL="${PRETRAIN_DIR}/phase_f_from_b1_lr1e5_final.pt"
+PHASE_C="${PRETRAIN_DIR}/phase_c_from_b1_lr1e6.pt"
+PHASE_D="${PRETRAIN_DIR}/phase_d_from_b1_lr1e6.pt"
+PHASE_E_FINAL="${PRETRAIN_DIR}/phase_e_from_b1_c1e6d1e6_final.pt"
+PHASE_F_FINAL="${PRETRAIN_DIR}/phase_f_from_b1_c1e6d1e6_final.pt"
 
 stage() {
   printf '\n\n============================================================\n'
@@ -133,10 +133,10 @@ fi
 echo "Starting C/D/E/F from completed B1:"
 echo "  actor:   ${PHASE_B1}"
 echo "  DAgger1: ${D1_COUNT} replays"
-echo "  LR rule: fixed eta=1e-5, no warmup"
+echo "  LR rule: C/D fixed eta=1e-6 for 200 epochs each; E/F fixed eta=1e-5"
 echo "  skipped: DAgger2, B2"
 
-stage "C — 50 epochs critic-only warmup"
+stage "C — 200 epochs critic-only warmup at eta=1e-6"
 run_if_missing "${PHASE_C}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase c \
@@ -146,22 +146,22 @@ run_if_missing "${PHASE_C}" \
     --dagger1_dir "${DAGGER1_DIR}" \
     --output_weights "${PHASE_C}"
 
-stage "D — 25 epochs shared-representation critic/KL bridge"
+stage "D — 200 epochs shared-representation critic/KL bridge at eta=1e-6"
 run_if_missing "${PHASE_D}" \
   "${PYTHON_BIN}" -m metamon.rl.taurosv1b_pretrain_wandb \
     --phase d \
-    --global_epoch_offset 400 \
+    --global_epoch_offset 550 \
     "${PRETRAIN_ARGS[@]}" \
     --input_weights "${PHASE_C}" \
     --dagger1_dir "${DAGGER1_DIR}" \
     --output_weights "${PHASE_D}"
 
 stage "E — 800 epochs public-opponent online RL"
-if [ ! -f "${STAGE_DIR}/phase_e_from_b1_lr1e5.done" ]; then
+if [ ! -f "${STAGE_DIR}/phase_e_from_b1_c1e6d1e6.done" ]; then
   METAMON_SAVE_DIR="${ONLINE_SAVE_DIR}" \
   BASE_WEIGHTS="${PHASE_D}" \
-  BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_e_from_b1_lr1e5" \
-  WANDB_RUN_ID="v1b-e-from-b1-lr1e5-${EXPERIMENT_ID}" \
+  BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_e_from_b1_c1e6d1e6" \
+  WANDB_RUN_ID="v1b-e-from-b1-c1e6d1e6-${EXPERIMENT_ID}" \
   WANDB_RESUME=allow \
     bash "${SCRIPT_DIR}/train_taurosv1b.sh" e --log
 
@@ -171,13 +171,13 @@ if [ ! -f "${STAGE_DIR}/phase_e_from_b1_lr1e5.done" ]; then
     exit 1
   fi
   cp -f "${E_LATEST}" "${PHASE_E_FINAL}"
-  touch "${STAGE_DIR}/phase_e_from_b1_lr1e5.done"
+  touch "${STAGE_DIR}/phase_e_from_b1_c1e6d1e6.done"
 else
   echo "[skip] Phase E marked complete."
 fi
 
 stage "F — 800 epochs recency-weighted V1B self-play"
-if [ ! -f "${STAGE_DIR}/phase_f_from_b1_lr1e5.done" ]; then
+if [ ! -f "${STAGE_DIR}/phase_f_from_b1_c1e6d1e6.done" ]; then
   if [ ! -s "${PHASE_E_FINAL}" ]; then
     E_LATEST="${ONLINE_SAVE_DIR}/taurosv1b_phase_e/ckpts/latest/policy.pt"
     if [ ! -s "${E_LATEST}" ]; then
@@ -189,10 +189,10 @@ if [ ! -f "${STAGE_DIR}/phase_f_from_b1_lr1e5.done" ]; then
 
   METAMON_SAVE_DIR="${ONLINE_SAVE_DIR}" \
   BASE_WEIGHTS="${PHASE_E_FINAL}" \
-  BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_f_from_b1_lr1e5" \
+  BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_f_from_b1_c1e6d1e6" \
   PHASE_F_ARCHIVE_DIR="${F_ARCHIVE_DIR}" \
   PHASE_F_ARCHIVE_MAX="${F_ARCHIVE_MAX}" \
-  WANDB_RUN_ID="v1b-f-from-b1-lr1e5-${EXPERIMENT_ID}" \
+  WANDB_RUN_ID="v1b-f-from-b1-c1e6d1e6-${EXPERIMENT_ID}" \
   WANDB_RESUME=allow \
     bash "${SCRIPT_DIR}/train_taurosv1b.sh" f --log
 
@@ -202,7 +202,7 @@ if [ ! -f "${STAGE_DIR}/phase_f_from_b1_lr1e5.done" ]; then
     exit 1
   fi
   cp -f "${F_LATEST}" "${PHASE_F_FINAL}"
-  touch "${STAGE_DIR}/phase_f_from_b1_lr1e5.done"
+  touch "${STAGE_DIR}/phase_f_from_b1_c1e6d1e6.done"
 else
   echo "[skip] Phase F marked complete."
 fi
