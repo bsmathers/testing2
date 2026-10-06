@@ -1,14 +1,14 @@
-# TaurosV1B phase E: 800 epochs of public-only online RL after A-D distillation.
+# TaurosV1B phase E: 900 epochs of public-only online RL after Phase C.
 #
 # Launch with the audited runner, NOT metamon.rl.online_rl:
 #   python -m metamon.rl.taurosv1b_online \
 #     --run_config metamon/rl/configs/online_runs/taurosv1b.yaml \
 #     --mode learn --save_dir ... --buffer_dir ... \
-#     --base_weights /path/to/v1b_phase_d.pt
+#     --base_weights /path/to/phase_c_from_b1_lr1e6.pt
 #
 # The base_model supplies only the exact V1/V1A 35M architecture/spaces. Its
-# checkpoint is not the initialization: --base_weights must be the output of
-# taurosv1b_pretrain phase D.
+# checkpoint is not the initialization: --base_weights is the completed Phase-C
+# checkpoint from the direct C -> E -> F pipeline.
 
 run_name: taurosv1b_phase_e
 base_model: TaurosV1A
@@ -34,21 +34,27 @@ online_weight: 0.60
 online_anneal_start_epoch: 0
 online_anneal_end_epoch: 400
 
+# Preserve the C policy early: start at 5e-6 and linearly reach 8e-5
+# after 100 learner epochs (= 100,000 optimizer updates).
 learning_rate: 8.0e-5
-lr_warmup_epochs: 0
+lr_warmup_start_lr: 5.0e-6
+lr_warmup_epochs: 100
+# Keep the sequence-level advantage filter near-neutral while the critic/policy
+# adapt to online data. This is independent of the LR ramp.
+seq_floor_warmup_epochs: 20
 # Keep the same effective batch (14 trajectories/update) while cutting peak
 # learner activation memory roughly in half. This is required when the async
 # collector and learner share a 16 GB GPU.
 batch_size_per_gpu: 7
 grad_accum: 2
-epochs: 800
+epochs: 900
 steps_per_epoch: 1000
 
 # The callback fires every 5 epochs so the in-memory model can play a 50-game
 # tournament against TaurosV0@62 and log the win rate. The V1B checkpoint hook
-# persists raw policies every 25 epochs and full states every 100.
+# persists raw policies every 25 epochs and full states every 25.
 ckpt_interval: 5
-full_state_ckpt_interval: 100
+full_state_ckpt_interval: 25
 mixed_precision: "no"
 
 lanes: 128

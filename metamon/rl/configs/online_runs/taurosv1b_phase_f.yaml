@@ -1,8 +1,8 @@
 # TaurosV1B phase F: 800 epochs of refinement with gated self-play.
 #
-# The end-to-end launcher enters F after E completes. The dynamic self-play slice
-# begins empty and safely falls back to the frozen public rows until phase-F V1B
-# checkpoints appear on disk.
+# The end-to-end launcher enters F after E completes. The launcher seeds
+# phase-F latest/policy.pt from the final E policy, so the dynamic self-play slice
+# is available during the initial FIFO prefill and then tracks evolving F weights.
 
 run_name: taurosv1b_phase_f
 base_model: TaurosV1A
@@ -26,6 +26,9 @@ online_anneal_end_epoch: 0
 
 learning_rate: 8.0e-5
 lr_warmup_epochs: 0
+# F starts from a mature E policy, so no LR ramp. Restore the intended short
+# sequence-filter ramp independently of LR warmup.
+seq_floor_warmup_epochs: 10
 # Keep the same effective batch (14 trajectories/update) while cutting peak
 # learner activation memory roughly in half. This is required when the async
 # collector and learner share a 16 GB GPU.
@@ -35,9 +38,9 @@ epochs: 800
 steps_per_epoch: 1000
 
 # Fire the monitored checkpoint hook every 5 epochs. The hook retains raw
-# policies only every 25 and full optimizer/RNG state only every 100.
+# policies only every 25 and full optimizer/RNG state every 25.
 ckpt_interval: 5
-full_state_ckpt_interval: 100
+full_state_ckpt_interval: 25
 mixed_precision: "no"
 
 lanes: 128
