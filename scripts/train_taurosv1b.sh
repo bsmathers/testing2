@@ -68,6 +68,9 @@ GPU_DEVICE="${METAMON_GPU_DEVICE:-0}"
 GPU_SAFETY_MB="${METAMON_GPU_QUEUE_SAFETY_MB:-1536}"
 LEARNER_GPU_BUDGET_MB="${LEARNER_GPU_BUDGET_MB:-7200}"
 COLLECTOR_GPU_BUDGET_MB="${COLLECTOR_GPU_BUDGET_MB:-6000}"
+# Steady-state collection deliberately runs on CPU once the learner starts.
+# Prefill may use GPU for speed because no learner exists yet.
+CPU_COLLECTOR_LANES="${CPU_COLLECTOR_LANES:-64}"
 TOURNAMENT_GPU_BUDGET_MB="${TOURNAMENT_GPU_BUDGET_MB:-3000}"
 export METAMON_GPU_DEVICE="${GPU_DEVICE}"
 export METAMON_GPU_QUEUE_SAFETY_MB="${GPU_SAFETY_MB}"
@@ -190,13 +193,12 @@ COLLECTOR_LOG="${LOG_DIR}/collector.log"
 LEARNER_LOG="${LOG_DIR}/learner.log"
 ARCHIVER_LOG="${LOG_DIR}/phase_f_replay_archive.log"
 
-collector_loop() {
+gpu_prefill_collector_loop() {
   while true; do
-    # One collector epoch per GPU lease.  Exiting the subprocess destroys its CUDA
-    # context, so queued tournament jobs get a real opportunity to acquire memory
-    # before the next collector burst.
+    # Before learning starts, use the otherwise-idle GPU to fill the FIFO quickly.
+    # Each burst owns a finite lease so it can be terminated cleanly at handoff.
     "${PYTHON_BIN}" -m metamon.rl.gpu_job_queue run \
-      --kind collector \
+      --kind collector-prefill \
       --budget-mb "${COLLECTOR_GPU_BUDGET_MB}" \
       --device "${GPU_DEVICE}" \
       --safety-mb "${GPU_SAFETY_MB}" \
@@ -213,7 +215,24 @@ collector_loop() {
   done
 }
 
-collector_loop >"${COLLECTOR_LOG}" 2>&1 &
+cpu_collector_loop() {
+  while true; do
+    # Once the learner owns the GPU, collection is CPU-only.  Hiding CUDA from
+    # this subprocess forces both the rollout policy and sampled opponent policy
+    # onto CPU, so collection can never consume learner VRAM or block its start.
+    CUDA_VISIBLE_DEVICES="" "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
+      --run_config "${CONFIG}" \
+      --mode collect \
+      --save_dir "${SAVE_DIR}" \
+      --buffer_dir "${BUFFER_DIR}" \
+      "${COLLECTOR_INIT[@]}" \
+      --lanes "${CPU_COLLECTOR_LANES}" \
+      --n_workers "${N_WORKERS}" \
+      --epochs 1 || return $?
+  done
+}
+
+gpu_prefill_collector_loop >"${COLLECTOR_LOG}" 2>&1 &
 COLLECTOR_PID=$!
 
 if [ "${IS_PHASE_F}" -eq 1 ]; then
@@ -250,8 +269,20 @@ while true; do
   printf '\rFIFO prefill: %s / %s' "${COUNT}" "$((DSET_MIN_SIZE + 1))"
   sleep 5
 done
-printf '\nFIFO ready. Starting learner.\n'
-echo "GPU queue: learner=${LEARNER_GPU_BUDGET_MB} MiB collector=${COLLECTOR_GPU_BUDGET_MB} MiB tournament=+${TOURNAMENT_GPU_BUDGET_MB} MiB safety=${GPU_SAFETY_MB} MiB"
+printf '\nFIFO ready. Handing GPU from collector to learner.\n'
+
+# The learner has priority over steady-state replay generation.  Tear down the
+# GPU prefill collector (including its child CUDA process) and wait for VRAM to
+# be returned before submitting the learner lease.
+if [ -n "${COLLECTOR_PID}" ]; then
+  kill -TERM "${COLLECTOR_PID}" 2>/dev/null || true
+  pkill -TERM -P "${COLLECTOR_PID}" 2>/dev/null || true
+  wait "${COLLECTOR_PID}" 2>/dev/null || true
+  COLLECTOR_PID=""
+fi
+
+echo "GPU queue: learner=${LEARNER_GPU_BUDGET_MB} MiB tournament=+${TOURNAMENT_GPU_BUDGET_MB} MiB safety=${GPU_SAFETY_MB} MiB"
+echo "Steady-state collector: CPU-only, lanes=${CPU_COLLECTOR_LANES}"
 
 "${PYTHON_BIN}" -m metamon.rl.gpu_job_queue run \
   --kind learner \
@@ -267,6 +298,12 @@ echo "GPU queue: learner=${LEARNER_GPU_BUDGET_MB} MiB collector=${COLLECTOR_GPU_
     "${LEARNER_INIT[@]}" \
     "${LEARNER_EXTRA[@]}" > >(tee "${LEARNER_LOG}") 2>&1 &
 LEARNER_PID=$!
+
+# Start replay generation only after the learner has been submitted.  This
+# process has CUDA hidden, so it cannot interfere with learner/tournament VRAM.
+cpu_collector_loop >>"${COLLECTOR_LOG}" 2>&1 &
+COLLECTOR_PID=$!
+echo "CPU collector PID ${COLLECTOR_PID}"
 
 # Monitor all asynchronous helpers for both E and F. A dead child that has not
 # yet been waited can remain a zombie for which `kill -0` still succeeds, so use
