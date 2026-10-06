@@ -40,16 +40,18 @@ export METAMON_CACHE_DIR="${METAMON_CACHE_DIR:-${HOME}/.cache/metamon}"
 export METAMON_ALLOW_ANY_POKE_ENV=1
 export METAMON_WANDB_PROJECT="${METAMON_WANDB_PROJECT:-taurosv1b}"
 export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-taurosv1b-${EXPERIMENT_ID}}"
-export WANDB_TAGS="${WANDB_TAGS:-taurosv1b,distilled-public,c-to-e}"
+export WANDB_TAGS="${WANDB_TAGS:-taurosv1b,distilled-public,c-to-e,kl50,gpu-queue}"
 export V1B_EXPERIMENT_ID="${EXPERIMENT_ID}"
 
 mkdir -p "${METAMON_SAVE_DIR}" "${METAMON_CACHE_DIR}"
-ONLINE_SAVE_DIR="${METAMON_SAVE_DIR}/from_c_direct_ef_online"
+# Use a fresh root for the KL50 restart so stale Phase-E checkpoints from the
+# abandoned direct-C run can never be auto-resumed accidentally.
+ONLINE_SAVE_DIR="${METAMON_SAVE_DIR}/from_c_direct_ef_kl50_online"
 mkdir -p "${ONLINE_SAVE_DIR}"
 
 PHASE_C="${PRETRAIN_DIR}/phase_c_from_b1_lr1e6.pt"
-PHASE_E_FINAL="${PRETRAIN_DIR}/phase_e_from_c_direct_final.pt"
-PHASE_F_FINAL="${PRETRAIN_DIR}/phase_f_from_c_direct_final.pt"
+PHASE_E_FINAL="${PRETRAIN_DIR}/phase_e_from_c_direct_kl50_final.pt"
+PHASE_F_FINAL="${PRETRAIN_DIR}/phase_f_from_c_direct_kl50_final.pt"
 
 stage() {
   printf '\n\n============================================================\n'
@@ -75,16 +77,17 @@ echo "Starting direct C -> E -> F continuation:"
 echo "  Phase C: ${PHASE_C}"
 echo "  Phase D: SKIPPED"
 echo "  E LR: 5e-6 -> 8e-5 linearly over 100 epochs; 900 epochs total"
+echo "  E trust region: KL(pi_C || pi_theta), coeff 1.0 -> 0 over first 50 epochs"
 echo "  F LR: 8e-5 without LR warmup; 800 epochs total"
 echo "  V0 monitor: 50 games vs TaurosV0@62 every 5 learner epochs"
 echo "  W&B metrics: tournament/v0_62_win_rate, tournament/v0_62_games, tournament/v0_62_binomial_stderr"
 
 stage "E — 900 epochs public-opponent online RL, initialized directly from C"
-if [ ! -f "${STAGE_DIR}/phase_e_from_c_direct.done" ] || [ ! -s "${PHASE_E_FINAL}" ]; then
+if [ ! -f "${STAGE_DIR}/phase_e_from_c_direct_kl50.done" ] || [ ! -s "${PHASE_E_FINAL}" ]; then
   METAMON_SAVE_DIR="${ONLINE_SAVE_DIR}" \
   BASE_WEIGHTS="${PHASE_C}" \
-  BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_e_from_c_direct" \
-  WANDB_RUN_ID="v1b-e-from-c-direct-${EXPERIMENT_ID}" \
+  BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_e_from_c_direct_kl50" \
+  WANDB_RUN_ID="v1b-e-from-c-direct-kl50-${EXPERIMENT_ID}" \
   WANDB_RESUME=allow \
     bash "${SCRIPT_DIR}/train_taurosv1b.sh" e --log
 
@@ -94,13 +97,13 @@ if [ ! -f "${STAGE_DIR}/phase_e_from_c_direct.done" ] || [ ! -s "${PHASE_E_FINAL
     exit 1
   fi
   cp -f "${E_LATEST}" "${PHASE_E_FINAL}"
-  touch "${STAGE_DIR}/phase_e_from_c_direct.done"
+  touch "${STAGE_DIR}/phase_e_from_c_direct_kl50.done"
 else
   echo "[skip] Phase E marked complete."
 fi
 
 stage "F — 800 epochs recency-weighted V1B self-play"
-if [ ! -f "${STAGE_DIR}/phase_f_from_c_direct.done" ] || [ ! -s "${PHASE_F_FINAL}" ]; then
+if [ ! -f "${STAGE_DIR}/phase_f_from_c_direct_kl50.done" ] || [ ! -s "${PHASE_F_FINAL}" ]; then
   if [ ! -s "${PHASE_E_FINAL}" ]; then
     E_LATEST="${ONLINE_SAVE_DIR}/taurosv1b_phase_e/ckpts/latest/policy.pt"
     if [ ! -s "${E_LATEST}" ]; then
@@ -112,10 +115,10 @@ if [ ! -f "${STAGE_DIR}/phase_f_from_c_direct.done" ] || [ ! -s "${PHASE_F_FINAL
 
   METAMON_SAVE_DIR="${ONLINE_SAVE_DIR}" \
   BASE_WEIGHTS="${PHASE_E_FINAL}" \
-  BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_f_from_c_direct" \
+  BUFFER_DIR="${WORK_DIR}/buffer_taurosv1b_phase_f_from_c_direct_kl50" \
   PHASE_F_ARCHIVE_DIR="${F_ARCHIVE_DIR}" \
   PHASE_F_ARCHIVE_MAX="${F_ARCHIVE_MAX}" \
-  WANDB_RUN_ID="v1b-f-from-c-direct-${EXPERIMENT_ID}" \
+  WANDB_RUN_ID="v1b-f-from-c-direct-kl50-${EXPERIMENT_ID}" \
   WANDB_RESUME=allow \
     bash "${SCRIPT_DIR}/train_taurosv1b.sh" f --log
 
@@ -125,7 +128,7 @@ if [ ! -f "${STAGE_DIR}/phase_f_from_c_direct.done" ] || [ ! -s "${PHASE_F_FINAL
     exit 1
   fi
   cp -f "${F_LATEST}" "${PHASE_F_FINAL}"
-  touch "${STAGE_DIR}/phase_f_from_c_direct.done"
+  touch "${STAGE_DIR}/phase_f_from_c_direct_kl50.done"
 else
   echo "[skip] Phase F marked complete."
 fi
