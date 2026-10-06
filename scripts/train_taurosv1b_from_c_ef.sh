@@ -4,8 +4,10 @@ set -euo pipefail
 # TaurosV1B continuation after the completed Phase-C critic warmup:
 #   phase_c_from_b1_lr1e6.pt -> E -> F
 #
-# Phase D is intentionally skipped. E/F both use eta=8e-5. Their training gin
-# files import metamon.rl.taurosv1b_tournament, whose checkpoint hook runs a
+# Phase D is intentionally skipped. E ramps linearly from 5e-6 to 8e-5 over
+# its first 100 epochs, then stays at 8e-5 through epoch 899. F uses 8e-5
+# without an LR ramp. Their training gin files import metamon.rl.taurosv1b_tournament,
+# whose checkpoint hook runs a
 # 50-game tournament vs TaurosV0@62 every 5 learner epochs and logs
 # tournament/v0_62_{win_rate,games,binomial_stderr} to the same W&B run.
 #
@@ -72,11 +74,12 @@ fi
 echo "Starting direct C -> E -> F continuation:"
 echo "  Phase C: ${PHASE_C}"
 echo "  Phase D: SKIPPED"
-echo "  E/F LR: 8e-5"
+echo "  E LR: 5e-6 -> 8e-5 linearly over 100 epochs; 900 epochs total"
+echo "  F LR: 8e-5 without LR warmup; 800 epochs total"
 echo "  V0 monitor: 50 games vs TaurosV0@62 every 5 learner epochs"
 echo "  W&B metrics: tournament/v0_62_win_rate, tournament/v0_62_games, tournament/v0_62_binomial_stderr"
 
-stage "E — 800 epochs public-opponent online RL, initialized directly from C"
+stage "E — 900 epochs public-opponent online RL, initialized directly from C"
 if [ ! -f "${STAGE_DIR}/phase_e_from_c_direct.done" ]; then
   METAMON_SAVE_DIR="${ONLINE_SAVE_DIR}" \
   BASE_WEIGHTS="${PHASE_C}" \
