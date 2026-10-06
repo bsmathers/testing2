@@ -70,7 +70,8 @@ def _query_nvidia_smi(device: int) -> tuple[int, int]:
     out = subprocess.check_output(
         [
             "nvidia-smi",
-            f"--id={device}",
+            "-i",
+            str(device),
             "--query-gpu=memory.total,memory.free",
             "--format=csv,noheader,nounits",
         ],
