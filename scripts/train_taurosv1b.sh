@@ -43,10 +43,11 @@ LANES="${LANES:-128}"
 DSET_MIN_SIZE="${DSET_MIN_SIZE:-5000}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-# CPU-only replay sharding.  The target host has 24 CPUs; reserve 4 for the
-# learner/system and use 20 for collection by default.
+# CPU-only replay sharding.  The target host has 24 CPUs.  Leave substantial
+# host-side headroom for dataloading/decompression and keeping the GPU learner fed.
+# Five shards at the default 10-CPU budget use 2 threads/shard.
 TOTAL_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 24)
-COLLECTOR_CPUS="${COLLECTOR_CPUS:-20}"
+COLLECTOR_CPUS="${COLLECTOR_CPUS:-10}"
 if [ "${COLLECTOR_CPUS}" -gt "${TOTAL_CPUS}" ]; then
   COLLECTOR_CPUS="${TOTAL_CPUS}"
 fi
