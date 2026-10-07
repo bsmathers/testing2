@@ -44,11 +44,10 @@ lr_warmup_epochs: 100
 # Keep the sequence-level advantage filter near-neutral while the critic/policy
 # adapt to online data. This is independent of the LR ramp.
 seq_floor_warmup_epochs: 20
-# The KL anchor adds one frozen policy forward. Reduce the microbatch further
-# and preserve essentially the same effective batch (15 vs 14 trajectories/update)
-# to leave robust headroom on a 16 GB shared GPU.
-batch_size_per_gpu: 5
-grad_accum: 3
+# The learner owns the GPU exclusively; use the original 7 x 2 update shape.
+# Effective batch size is 14 trajectories/update.
+batch_size_per_gpu: 7
+grad_accum: 2
 epochs: 900
 steps_per_epoch: 1000
 
