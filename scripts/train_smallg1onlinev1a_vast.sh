@@ -9,24 +9,23 @@ set -Eeuo pipefail
 #   REPO_DIR/teams_replay/good_teams  807 .txt/.gen1ou_team files
 #
 # Target Vast host: RTX 5090 (32 GiB), CUDA-capable PyTorch environment,
-# 16+ CPU cores, and 64+ GiB system RAM.
-# Persistent outputs default to /workspace/smallg1onlinev1a-14x1 so this run
-# cannot accidentally resume the earlier 7x2 experiment.
+# 16 CPU cores, and 32+ GiB system RAM.
+# Persistent outputs default to /workspace/smallg1onlinev1a-sequential128 so
+# this run cannot accidentally resume either earlier asynchronous experiment.
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-PERSIST_ROOT="${PERSIST_ROOT:-/workspace/smallg1onlinev1a-14x1}"
+PERSIST_ROOT="${PERSIST_ROOT:-/workspace/smallg1onlinev1a-sequential128}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-RUN_NAME="${RUN_NAME:-smallg1onlinev1a-14x1}"
+RUN_NAME="${RUN_NAME:-smallg1onlinev1a-sequential128}"
 WANDB_PROJECT="${METAMON_WANDB_PROJECT:-smallg1onlinev1a}"
-WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-14x1-v1}"
-WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a-14x1}"
-COLLECTOR_PROCESSES="${COLLECTOR_PROCESSES:-1}"
-LANES="${LANES:-64}"
-COLLECTOR_WORKERS="${COLLECTOR_WORKERS:-8}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-sequential128-v1}"
+WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a-sequential128}"
+LANES="${LANES:-128}"
+COLLECTOR_WORKERS="${COLLECTOR_WORKERS:-16}"
 DLOADER_WORKERS="${DLOADER_WORKERS:-8}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-14}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
@@ -59,14 +58,13 @@ export METAMON_WANDB_PROJECT="${WANDB_PROJECT}"
 export WANDB_RUN_ID WANDB_NAME
 export WANDB_RESUME="${WANDB_RESUME:-allow}"
 export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-smallg1onlinev1a}"
-export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,14x1,gen1ou,epoch475,807-teams,vast,zig}"
+export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,sequential128,14x1,gen1ou,epoch475,807-teams,vast,zig}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export HF_XET_HIGH_PERFORMANCE=1
 
 cd "${REPO_DIR}"
-[[ "${COLLECTOR_PROCESSES}" =~ ^[1-9][0-9]*$ ]] || die "COLLECTOR_PROCESSES must be a positive integer"
 [[ "${LANES}" =~ ^[1-9][0-9]*$ ]] || die "LANES must be a positive integer"
 [[ "${COLLECTOR_WORKERS}" =~ ^[1-9][0-9]*$ ]] || die "COLLECTOR_WORKERS must be a positive integer"
 [[ "${DLOADER_WORKERS}" =~ ^[0-9]+$ ]] || die "DLOADER_WORKERS must be a non-negative integer"
@@ -318,7 +316,7 @@ n_workers: ${COLLECTOR_WORKERS}
 train_timesteps_per_epoch: 500
 temp_low: 1.0
 temp_high: 2.0
-val_timesteps: 1000
+val_timesteps: 0
 val_interval: 10
 dloader_workers: ${DLOADER_WORKERS}
 YAML
@@ -418,18 +416,15 @@ cleanup_collectors() {
 trap cleanup_collectors EXIT
 trap 'exit 130' INT TERM
 
-start_collectors() {
-  local seed_base="$1" phase="$2" i seed
+start_prefill_collector() {
+  local seed="$1"
   COLLECTOR_PIDS=()
-  for ((i=0; i<COLLECTOR_PROCESSES; i++)); do
-    seed=$((seed_base + i))
-    "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
-      --run_config "${RUN_CONFIG}" --mode collect \
-      --save_dir "${SAVE_DIR}" --buffer_dir "${BUFFER_DIR}" \
-      --base_weights "${LATEST}" --epochs 1000000 --seed "${seed}" \
-      > >(tee -a "${LOG_DIR}/collector-${phase}-${i}.log") 2>&1 &
-    COLLECTOR_PIDS+=("$!")
-  done
+  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
+    --run_config "${RUN_CONFIG}" --mode collect \
+    --save_dir "${SAVE_DIR}" --buffer_dir "${BUFFER_DIR}" \
+    --base_weights "${LATEST}" --epochs 1000000 --seed "${seed}" \
+    > >(tee -a "${LOG_DIR}/collector-prefill.log") 2>&1 &
+  COLLECTOR_PIDS+=("$!")
 }
 
 fifo_count() {
@@ -439,11 +434,11 @@ fifo_count() {
 current="$(fifo_count)"
 if (( current < PREFILL_FILES )); then
   log "Prefilling online FIFO: ${current}/${PREFILL_FILES}"
-  start_collectors 0 prefill
+  start_prefill_collector 0
   while (( current < PREFILL_FILES )); do
     sleep 30
     for pid in "${COLLECTOR_PIDS[@]}"; do
-      kill -0 "${pid}" 2>/dev/null || die "A prefill collector exited; inspect ${LOG_DIR}/collector-prefill-*.log"
+      kill -0 "${pid}" 2>/dev/null || die "The prefill collector exited; inspect ${LOG_DIR}/collector-prefill.log"
     done
     current="$(fifo_count)"
     echo "FIFO prefill: ${current}/${PREFILL_FILES}"
@@ -453,19 +448,17 @@ else
   log "FIFO already contains ${current} files; skipping prefill"
 fi
 
-start_collectors 1000 train
-
-log "Launching SmallG1OnlineV1a learner with W&B run ${WANDB_PROJECT}/${WANDB_RUN_ID}"
+log "Launching synchronized SmallG1OnlineV1a collection + learning with W&B run ${WANDB_PROJECT}/${WANDB_RUN_ID}"
+log "Each epoch collects 500 steps across ${LANES} lanes, then performs 1000 updates at ${BATCH_SIZE_PER_GPU}x${GRAD_ACCUM}"
 set +e
 "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
-  --run_config "${RUN_CONFIG}" --mode learn \
+  --run_config "${RUN_CONFIG}" --mode both \
   --save_dir "${SAVE_DIR}" --buffer_dir "${BUFFER_DIR}" --log \
   "${LEARNER_RESUME_ARGS[@]}" \
-  2>&1 | tee -a "${LOG_DIR}/learner.log"
-learner_status="${PIPESTATUS[0]}"
+  2>&1 | tee -a "${LOG_DIR}/sequential-run.log"
+run_status="${PIPESTATUS[0]}"
 set -e
-cleanup_collectors
 trap - EXIT INT TERM
 
-(( learner_status == 0 )) || die "Learner exited with status ${learner_status}; inspect ${LOG_DIR}/learner.log"
+(( run_status == 0 )) || die "Sequential run exited with status ${run_status}; inspect ${LOG_DIR}/sequential-run.log"
 log "SmallG1OnlineV1a training completed"
