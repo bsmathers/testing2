@@ -301,6 +301,11 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
         before = self._trajectory_count(cfg["buffer_dir"])
         started = time.monotonic()
         children: list[tuple[subprocess.Popen, Any, str]] = []
+        collector_stagger = float(
+            os.environ.get("METAMON_COLLECTOR_START_STAGGER_SECONDS", "0")
+        )
+        if collector_stagger < 0:
+            raise ValueError("METAMON_COLLECTOR_START_STAGGER_SECONDS must be non-negative")
         # Learner activations from the preceding phase are no longer live, but
         # PyTorch's allocator may retain their blocks. Return those blocks before
         # launching several GPU collector processes.
@@ -408,6 +413,8 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
                         stderr=subprocess.STDOUT,
                     )
                     children.append((process, log_file, log_path))
+                    if worker_id + 1 < cfg["processes"] and collector_stagger:
+                        time.sleep(collector_stagger)
 
                 failures = []
                 for process, _, log_path in children:

@@ -27,6 +27,7 @@ WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a-sequential8x64-750}"
 LANES="${LANES:-512}"
 COLLECTOR_WORKERS="${COLLECTOR_WORKERS:-16}"
 COLLECTOR_PROCESSES="${COLLECTOR_PROCESSES:-8}"
+COLLECTOR_START_STAGGER_SECONDS="${COLLECTOR_START_STAGGER_SECONDS:-5}"
 DLOADER_WORKERS="${DLOADER_WORKERS:-8}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-14}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
@@ -110,12 +111,14 @@ export METAMON_PARTIAL_HIDDEN_CHUNK="${PARTIAL_HIDDEN_CHUNK}"
 export METAMON_VEC_PROFILE="${METAMON_VEC_PROFILE:-1}"
 export METAMON_VEC_PROFILE_INTERVAL="${VEC_PROFILE_INTERVAL}"
 export METAMON_COLLECTOR_PROCESSES="${COLLECTOR_PROCESSES}"
+export METAMON_COLLECTOR_START_STAGGER_SECONDS="${COLLECTOR_START_STAGGER_SECONDS}"
 export METAMON_PARALLEL_COLLECTOR_LOG_DIR="${LOG_DIR}/parallel-collectors"
 
 cd "${REPO_DIR}"
 [[ "${LANES}" =~ ^[1-9][0-9]*$ ]] || die "LANES must be a positive integer"
 [[ "${COLLECTOR_WORKERS}" =~ ^[1-9][0-9]*$ ]] || die "COLLECTOR_WORKERS must be a positive integer"
 [[ "${COLLECTOR_PROCESSES}" =~ ^[1-9][0-9]*$ ]] || die "COLLECTOR_PROCESSES must be a positive integer"
+[[ "${COLLECTOR_START_STAGGER_SECONDS}" =~ ^[0-9]+$ ]] || die "COLLECTOR_START_STAGGER_SECONDS must be a non-negative integer"
 [[ "${DLOADER_WORKERS}" =~ ^[0-9]+$ ]] || die "DLOADER_WORKERS must be a non-negative integer"
 [[ "${BATCH_SIZE_PER_GPU}" =~ ^[1-9][0-9]*$ ]] || die "BATCH_SIZE_PER_GPU must be a positive integer"
 [[ "${GRAD_ACCUM}" =~ ^[1-9][0-9]*$ ]] || die "GRAD_ACCUM must be a positive integer"
@@ -496,6 +499,9 @@ start_prefill_collectors() {
       --lanes "${LANES_PER_COLLECTOR}" --n_workers "${WORKERS_PER_COLLECTOR}" \
       > >(tee -a "${LOG_DIR}/collector-prefill-${worker_id}.log") 2>&1 &
     COLLECTOR_PIDS+=("$!")
+    if (( worker_id + 1 < COLLECTOR_PROCESSES && COLLECTOR_START_STAGGER_SECONDS > 0 )); then
+      sleep "${COLLECTOR_START_STAGGER_SECONDS}"
+    fi
   done
 }
 
@@ -515,7 +521,16 @@ if (( current < PREFILL_FILES )); then
   while (( current < PREFILL_FILES )); do
     sleep 30
     for pid in "${COLLECTOR_PIDS[@]}"; do
-      kill -0 "${pid}" 2>/dev/null || die "A prefill collector exited; inspect ${LOG_DIR}/collector-prefill-*.log"
+      if ! kill -0 "${pid}" 2>/dev/null; then
+        set +e
+        wait "${pid}"
+        collector_status="$?"
+        set -e
+        if (( collector_status == 137 )); then
+          die "Prefill collector ${pid} was SIGKILLed (exit 137), usually by the host OOM killer; inspect ${LOG_DIR}/collector-prefill-*.log"
+        fi
+        die "Prefill collector ${pid} exited with status ${collector_status}; inspect ${LOG_DIR}/collector-prefill-*.log"
+      fi
     done
     current="$(fifo_count)"
     prefill_now_time="$(date +%s)"
