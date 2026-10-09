@@ -10,30 +10,31 @@ set -Eeuo pipefail
 #
 # Target Vast host: RTX 5090 (32 GiB), CUDA-capable PyTorch environment,
 # 16+ CPU cores, and 64+ GiB system RAM.
-# Persistent outputs default to /workspace/smallg1onlinev1a.
+# Persistent outputs default to /workspace/smallg1onlinev1a-14x1 so this run
+# cannot accidentally resume the earlier 7x2 experiment.
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-PERSIST_ROOT="${PERSIST_ROOT:-/workspace/smallg1onlinev1a}"
+PERSIST_ROOT="${PERSIST_ROOT:-/workspace/smallg1onlinev1a-14x1}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-RUN_NAME="${RUN_NAME:-smallg1onlinev1a}"
+RUN_NAME="${RUN_NAME:-smallg1onlinev1a-14x1}"
 WANDB_PROJECT="${METAMON_WANDB_PROJECT:-smallg1onlinev1a}"
-WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-vast-v1}"
-WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-14x1-v1}"
+WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a-14x1}"
 COLLECTOR_PROCESSES="${COLLECTOR_PROCESSES:-1}"
-LANES="${LANES:-96}"
+LANES="${LANES:-64}"
 COLLECTOR_WORKERS="${COLLECTOR_WORKERS:-8}"
 DLOADER_WORKERS="${DLOADER_WORKERS:-8}"
-BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-7}"
-GRAD_ACCUM="${GRAD_ACCUM:-2}"
+BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-14}"
+GRAD_ACCUM="${GRAD_ACCUM:-1}"
 MIXED_PRECISION="${MIXED_PRECISION:-no}"
 PREFILL_FILES="${PREFILL_FILES:-5001}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
 
-CACHE_DIR="${PERSIST_ROOT}/cache"
+CACHE_DIR="${CACHE_DIR:-${PERSIST_ROOT}/cache}"
 SAVE_DIR="${PERSIST_ROOT}/checkpoints"
 BUFFER_DIR="${PERSIST_ROOT}/online_buffer"
 CONFIG_DIR="${PERSIST_ROOT}/config"
@@ -58,7 +59,7 @@ export METAMON_WANDB_PROJECT="${WANDB_PROJECT}"
 export WANDB_RUN_ID WANDB_NAME
 export WANDB_RESUME="${WANDB_RESUME:-allow}"
 export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-smallg1onlinev1a}"
-export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,gen1ou,epoch475,807-teams,vast,zig}"
+export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,14x1,gen1ou,epoch475,807-teams,vast,zig}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
