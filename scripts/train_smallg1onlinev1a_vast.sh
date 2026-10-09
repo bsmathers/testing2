@@ -10,7 +10,7 @@ set -Eeuo pipefail
 #
 # Target Vast host: RTX 5090 (32 GiB), CUDA-capable PyTorch environment,
 # 16 CPU cores, and 32+ GiB system RAM.
-# Persistent outputs default to /workspace/smallg1onlinev1a-sequential128-750
+# Persistent outputs default to /workspace/smallg1onlinev1a-sequential192-750
 # so this run cannot accidentally resume any earlier experiment.
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -18,13 +18,13 @@ log() { printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-PERSIST_ROOT="${PERSIST_ROOT:-/workspace/smallg1onlinev1a-sequential128-750}"
+PERSIST_ROOT="${PERSIST_ROOT:-/workspace/smallg1onlinev1a-sequential192-750}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-RUN_NAME="${RUN_NAME:-smallg1onlinev1a-sequential128-750}"
+RUN_NAME="${RUN_NAME:-smallg1onlinev1a-sequential192-750}"
 WANDB_PROJECT="${METAMON_WANDB_PROJECT:-smallg1onlinev1a}"
-WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-sequential128-750-v1}"
-WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a-sequential128-750}"
-LANES="${LANES:-128}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-sequential192-750-v1}"
+WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a-sequential192-750}"
+LANES="${LANES:-192}"
 COLLECTOR_WORKERS="${COLLECTOR_WORKERS:-16}"
 DLOADER_WORKERS="${DLOADER_WORKERS:-8}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-14}"
@@ -59,6 +59,8 @@ cleanup_old_run_weights() {
     "/workspace/smallg1onlinev1a-14x1/bootstrap"
     "/workspace/smallg1onlinev1a-sequential128/checkpoints"
     "/workspace/smallg1onlinev1a-sequential128/bootstrap"
+    "/workspace/smallg1onlinev1a-sequential128-750/checkpoints"
+    "/workspace/smallg1onlinev1a-sequential128-750/bootstrap"
   )
   for path in "${old_weight_dirs[@]}"; do
     [[ -e "${path}" ]] || continue
@@ -68,7 +70,9 @@ cleanup_old_run_weights() {
       /workspace/smallg1onlinev1a-14x1/checkpoints|\
       /workspace/smallg1onlinev1a-14x1/bootstrap|\
       /workspace/smallg1onlinev1a-sequential128/checkpoints|\
-      /workspace/smallg1onlinev1a-sequential128/bootstrap) ;;
+      /workspace/smallg1onlinev1a-sequential128/bootstrap|\
+      /workspace/smallg1onlinev1a-sequential128-750/checkpoints|\
+      /workspace/smallg1onlinev1a-sequential128-750/bootstrap) ;;
       *) die "Refusing to clean unexpected path: ${path}" ;;
     esac
     rm -rf -- "${path}"
@@ -94,7 +98,7 @@ export METAMON_WANDB_PROJECT="${WANDB_PROJECT}"
 export WANDB_RUN_ID WANDB_NAME
 export WANDB_RESUME="${WANDB_RESUME:-allow}"
 export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-smallg1onlinev1a}"
-export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,sequential128,collect750,14x1,gen1ou,epoch475,807-teams,vast,zig}"
+export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,sequential192,collect750,14x1,gen1ou,epoch475,807-teams,vast,zig}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
@@ -477,6 +481,10 @@ fifo_count() {
 current="$(fifo_count)"
 if (( current < PREFILL_FILES )); then
   log "Prefilling online FIFO: ${current}/${PREFILL_FILES}"
+  prefill_start_count="${current}"
+  prefill_last_count="${current}"
+  prefill_start_time="$(date +%s)"
+  prefill_last_time="${prefill_start_time}"
   start_prefill_collector 0
   while (( current < PREFILL_FILES )); do
     sleep 30
@@ -484,7 +492,21 @@ if (( current < PREFILL_FILES )); then
       kill -0 "${pid}" 2>/dev/null || die "The prefill collector exited; inspect ${LOG_DIR}/collector-prefill.log"
     done
     current="$(fifo_count)"
-    echo "FIFO prefill: ${current}/${PREFILL_FILES}"
+    prefill_now_time="$(date +%s)"
+    prefill_interval_games="$(( current - prefill_last_count ))"
+    prefill_interval_seconds="$(( prefill_now_time - prefill_last_time ))"
+    prefill_total_games="$(( current - prefill_start_count ))"
+    prefill_total_seconds="$(( prefill_now_time - prefill_start_time ))"
+    prefill_interval_rate="$(awk \
+      -v games="${prefill_interval_games}" -v elapsed="${prefill_interval_seconds}" \
+      'BEGIN { if (elapsed > 0) printf "%.2f", games / elapsed; else print "0.00" }')"
+    prefill_total_rate="$(awk \
+      -v games="${prefill_total_games}" -v elapsed="${prefill_total_seconds}" \
+      'BEGIN { if (elapsed > 0) printf "%.2f", games / elapsed; else print "0.00" }')"
+    printf 'FIFO prefill: %s/%s | completed games/s: %s interval, %s cumulative\n' \
+      "${current}" "${PREFILL_FILES}" "${prefill_interval_rate}" "${prefill_total_rate}"
+    prefill_last_count="${current}"
+    prefill_last_time="${prefill_now_time}"
   done
   cleanup_collectors
 else
