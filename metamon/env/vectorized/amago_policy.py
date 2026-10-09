@@ -9,6 +9,7 @@ and the opponent stack uses the same class so both policies see identical inputs
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -44,9 +45,12 @@ class AmagoLadderPolicyDriver:
 
     # Keep partial-lane inference memory bounded.  A Tauros-sized transformer KV
     # cache is large enough that cloning dozens of inactive lanes can OOM a 16 GB
-    # learner/collector GPU.  Eight lanes keeps temporary cache storage small while
-    # preserving a useful amount of batching.
-    _PARTIAL_HIDDEN_CHUNK = 8
+    # learner/collector GPU.  Eight lanes is the conservative default for 16 GB
+    # cards; larger cards can raise this to reduce tiny policy forwards while
+    # retaining an explicit upper bound on transient KV-cache storage.
+    _PARTIAL_HIDDEN_CHUNK = int(os.environ.get("METAMON_PARTIAL_HIDDEN_CHUNK", "8"))
+    if _PARTIAL_HIDDEN_CHUNK < 1:
+        raise ValueError("METAMON_PARTIAL_HIDDEN_CHUNK must be a positive integer")
 
     def _snapshot_hidden(self, idx: np.ndarray) -> Optional[dict]:
         """Save a *small* set of lanes before a full-batch policy forward."""

@@ -210,6 +210,11 @@ class VectorizedShowdownEnv(gym.Env):
         self._profile_stats: Dict[str, float] = {}
         self._profile_steps = 0
         self._profile_reported = False
+        self._profile_interval = int(
+            os.environ.get("METAMON_VEC_PROFILE_INTERVAL", "0")
+        )
+        if self._profile_interval < 0:
+            raise ValueError("METAMON_VEC_PROFILE_INTERVAL must be non-negative")
 
         self.observation_space = self._build_observation_space()
         self.action_space = eval_action_space.gym_space
@@ -869,6 +874,12 @@ class VectorizedShowdownEnv(gym.Env):
 
         if self._profile:
             self._profile_steps += 1
+            if (
+                self._profile_interval
+                and self._profile_steps % self._profile_interval == 0
+            ):
+                print(self.profile_report(), flush=True)
+                self._profile_reported = True
 
         merged_info: Dict[str, Any] = {"legal_actions": legal_actions}
         for i, info in enumerate(infos):

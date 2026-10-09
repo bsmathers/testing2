@@ -441,6 +441,18 @@ class ShardedShowdownSimProcess:
             self._worker_counts.append(count)
             offset += count
 
+        # Commands resolve global lanes on every batch.  Precompute the mapping
+        # once instead of scanning every worker for every choice/restart message.
+        self._lane_workers = [0] * self._num_lanes
+        self._lane_locals = [0] * self._num_lanes
+        for worker_id, (worker_base, worker_count) in enumerate(
+            zip(self._worker_bases, self._worker_counts)
+        ):
+            for local_lane in range(worker_count):
+                global_lane = worker_base + local_lane
+                self._lane_workers[global_lane] = worker_id
+                self._lane_locals[global_lane] = local_lane
+
         worker_kwargs = dict(
             node_path=node_path,
             host_script=host_script,
@@ -464,12 +476,9 @@ class ShardedShowdownSimProcess:
 
     def _local_lane(self, global_lane: int) -> Tuple[int, int]:
         global_lane = int(global_lane)
-        for worker_id in range(self._n_workers):
-            base = self._worker_bases[worker_id]
-            count = self._worker_counts[worker_id]
-            if base <= global_lane < base + count:
-                return worker_id, global_lane - base
-        raise ShowdownSimProcessError(f"invalid global lane id {global_lane}")
+        if not 0 <= global_lane < self._num_lanes:
+            raise ShowdownSimProcessError(f"invalid global lane id {global_lane}")
+        return self._lane_workers[global_lane], self._lane_locals[global_lane]
 
     def _relay_worker(self, worker_id: int, proc: ShowdownSimProcess) -> None:
         while not self._closed:

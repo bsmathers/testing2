@@ -32,6 +32,9 @@ GRAD_ACCUM="${GRAD_ACCUM:-1}"
 MIXED_PRECISION="${MIXED_PRECISION:-no}"
 PREFILL_FILES="${PREFILL_FILES:-25000}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
+CLEAN_OLD_RUN_WEIGHTS="${CLEAN_OLD_RUN_WEIGHTS:-1}"
+PARTIAL_HIDDEN_CHUNK="${PARTIAL_HIDDEN_CHUNK:-16}"
+VEC_PROFILE_INTERVAL="${VEC_PROFILE_INTERVAL:-750}"
 
 CACHE_DIR="${CACHE_DIR:-${PERSIST_ROOT}/cache}"
 SAVE_DIR="${PERSIST_ROOT}/checkpoints"
@@ -46,6 +49,39 @@ POOL_CONFIG="${CONFIG_DIR}/hl_gen1ou_smallg1onlinev1a.yaml"
 EXPERT_DIR="${CACHE_DIR}/teams/smallg1onlinev1a_expert/gen1ou"
 
 [[ -f "${REPO_DIR}/pyproject.toml" ]] || die "REPO_DIR is not testing2: ${REPO_DIR}"
+
+cleanup_old_run_weights() {
+  local path
+  local -a old_weight_dirs=(
+    "/workspace/smallg1onlinev1a/checkpoints"
+    "/workspace/smallg1onlinev1a/bootstrap"
+    "/workspace/smallg1onlinev1a-14x1/checkpoints"
+    "/workspace/smallg1onlinev1a-14x1/bootstrap"
+    "/workspace/smallg1onlinev1a-sequential128/checkpoints"
+    "/workspace/smallg1onlinev1a-sequential128/bootstrap"
+  )
+  for path in "${old_weight_dirs[@]}"; do
+    [[ -e "${path}" ]] || continue
+    case "${path}" in
+      /workspace/smallg1onlinev1a/checkpoints|\
+      /workspace/smallg1onlinev1a/bootstrap|\
+      /workspace/smallg1onlinev1a-14x1/checkpoints|\
+      /workspace/smallg1onlinev1a-14x1/bootstrap|\
+      /workspace/smallg1onlinev1a-sequential128/checkpoints|\
+      /workspace/smallg1onlinev1a-sequential128/bootstrap) ;;
+      *) die "Refusing to clean unexpected path: ${path}" ;;
+    esac
+    rm -rf -- "${path}"
+    log "Deleted superseded model-weight directory: ${path}"
+  done
+}
+
+[[ "${CLEAN_OLD_RUN_WEIGHTS}" =~ ^(0|1)$ ]] \
+  || die "CLEAN_OLD_RUN_WEIGHTS must be 0 or 1"
+if [[ "${CLEAN_OLD_RUN_WEIGHTS}" == "1" ]]; then
+  cleanup_old_run_weights
+fi
+
 mkdir -p "${CACHE_DIR}" "${SAVE_DIR}" "${BUFFER_DIR}/gen1ou" \
   "${CONFIG_DIR}" "${BOOTSTRAP_DIR}" "${LOG_DIR}"
 
@@ -63,6 +99,9 @@ export WANDB_MODE="${WANDB_MODE:-online}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export HF_XET_HIGH_PERFORMANCE=1
+export METAMON_PARTIAL_HIDDEN_CHUNK="${PARTIAL_HIDDEN_CHUNK}"
+export METAMON_VEC_PROFILE="${METAMON_VEC_PROFILE:-1}"
+export METAMON_VEC_PROFILE_INTERVAL="${VEC_PROFILE_INTERVAL}"
 
 cd "${REPO_DIR}"
 [[ "${LANES}" =~ ^[1-9][0-9]*$ ]] || die "LANES must be a positive integer"
@@ -71,6 +110,10 @@ cd "${REPO_DIR}"
 [[ "${BATCH_SIZE_PER_GPU}" =~ ^[1-9][0-9]*$ ]] || die "BATCH_SIZE_PER_GPU must be a positive integer"
 [[ "${GRAD_ACCUM}" =~ ^[1-9][0-9]*$ ]] || die "GRAD_ACCUM must be a positive integer"
 [[ "${MIXED_PRECISION}" =~ ^(no|fp16|bf16)$ ]] || die "MIXED_PRECISION must be no, fp16, or bf16"
+[[ "${PARTIAL_HIDDEN_CHUNK}" =~ ^[1-9][0-9]*$ ]] \
+  || die "PARTIAL_HIDDEN_CHUNK must be a positive integer"
+[[ "${VEC_PROFILE_INTERVAL}" =~ ^[0-9]+$ ]] \
+  || die "VEC_PROFILE_INTERVAL must be a non-negative integer"
 (( LANES % COLLECTOR_WORKERS == 0 )) \
   || die "LANES (${LANES}) must be divisible by COLLECTOR_WORKERS (${COLLECTOR_WORKERS})"
 
