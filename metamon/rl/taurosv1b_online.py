@@ -301,6 +301,12 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
         before = self._trajectory_count(cfg["buffer_dir"])
         started = time.monotonic()
         children: list[tuple[subprocess.Popen, Any, str]] = []
+        # Learner activations from the preceding phase are no longer live, but
+        # PyTorch's allocator may retain their blocks. Return those blocks before
+        # launching several GPU collector processes.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
         print(
             f"[parallel collection] epoch {self.epoch}: {cfg['processes']} processes x "
             f"{per_process_lanes} lanes x {cfg['timesteps']} steps "
