@@ -8,8 +8,9 @@ set -Eeuo pipefail
 #   REPO_DIR/policy/                  3 epoch-475 shards + checksum
 #   REPO_DIR/teams_replay/good_teams  807 .txt/.gen1ou_team files
 #
-# Target Vast host: RTX 5090 (32 GiB), CUDA 12.8, PyTorch 2.7.1+cu128,
+# Target Vast host: RTX 5090 (32 GiB), CUDA 13.0, PyTorch 2.12.1+cu130,
 # 16+ CPU cores, and 64+ GiB system RAM.
+# Recommended image: pytorch/pytorch:2.12.1-cuda13.0-cudnn9-devel
 # Persistent outputs default to /workspace/smallg1onlinev1a.
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -32,6 +33,8 @@ GRAD_ACCUM="${GRAD_ACCUM:-2}"
 MIXED_PRECISION="${MIXED_PRECISION:-no}"
 PREFILL_FILES="${PREFILL_FILES:-5001}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
+EXPECTED_TORCH_VERSION="2.12.1"
+EXPECTED_CUDA_VERSION="13.0"
 
 CACHE_DIR="${PERSIST_ROOT}/cache"
 SAVE_DIR="${PERSIST_ROOT}/checkpoints"
@@ -67,6 +70,7 @@ export FLASH_ATTN_CUDA_ARCHS="${FLASH_ATTN_CUDA_ARCHS:-120}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.0}"
 export FLASH_ATTENTION_FORCE_BUILD=TRUE
 export HF_XET_HIGH_PERFORMANCE=1
+export EXPECTED_TORCH_VERSION EXPECTED_CUDA_VERSION
 
 cd "${REPO_DIR}"
 [[ "${COLLECTOR_PROCESSES}" =~ ^[1-9][0-9]*$ ]] || die "COLLECTOR_PROCESSES must be a positive integer"
@@ -97,6 +101,7 @@ df -i "${PERSIST_ROOT}"
 check_torch_cuda() {
   "${PYTHON_BIN}" - <<'PY'
 import re
+import os
 import shutil
 import subprocess
 import sys
@@ -116,47 +121,61 @@ def version_tuple(value):
 
 print(f"Python: {sys.version.split()[0]}")
 print(f"Torch: {torch.__version__}; compiled CUDA: {torch.version.cuda}")
-if version_tuple(torch.__version__.split("+")[0]) < (2, 7):
-    raise SystemExit("torch>=2.7 is required for RTX 5090/Blackwell support")
+torch_release = torch.__version__.split("+")[0]
+expected_torch = os.environ["EXPECTED_TORCH_VERSION"]
+expected_cuda = os.environ["EXPECTED_CUDA_VERSION"]
+if torch_release != expected_torch:
+    raise SystemExit(f"Expected torch {expected_torch}, got {torch.__version__}")
 if torch.version.cuda is None:
     raise SystemExit("This is a CPU-only Torch build; select a CUDA PyTorch template")
+if version_tuple(torch.version.cuda) != version_tuple(expected_cuda):
+    raise SystemExit(
+        f"Expected a CUDA {expected_cuda} Torch build, got torch CUDA {torch.version.cuda}"
+    )
 if not torch.cuda.is_available():
     raise SystemExit("CUDA is not available to PyTorch; check the Vast GPU/template configuration")
 print(f"GPU: {torch.cuda.get_device_name(0)}; VRAM: {torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} GiB")
+if torch.cuda.get_device_capability(0) != (12, 0):
+    raise SystemExit(
+        f"This launcher builds FlashAttention for RTX 5090 sm_120; got compute capability "
+        f"{torch.cuda.get_device_capability(0)}"
+    )
 if torch.cuda.get_device_properties(0).total_memory < 30 * 2**30:
     raise SystemExit(
         "The default shared learner/collector settings require at least 30 GiB VRAM. "
         "For a smaller GPU, explicitly reduce LANES and batch settings."
     )
 
-try:
-    import flash_attn  # noqa: F401
-except ImportError:
-    nvcc = shutil.which("nvcc")
-    if nvcc is None:
-        raise SystemExit(
-            "flash-attn is absent and nvcc is unavailable. Use a CUDA development template "
-            "(not a runtime-only image)."
-        )
-    output = subprocess.check_output([nvcc, "--version"], text=True)
-    match = re.search(r"release\s+(\d+\.\d+)", output)
-    if not match:
-        raise SystemExit(f"Could not parse nvcc version:\n{output}")
-    compiler_cuda = match.group(1)
-    if version_tuple(compiler_cuda) != version_tuple(torch.version.cuda):
-        raise SystemExit(
-            f"CUDA mismatch: nvcc={compiler_cuda}, torch={torch.version.cuda}. "
-            "Choose a Vast template whose Torch and CUDA toolkit match."
-        )
-    print(f"nvcc: CUDA {compiler_cuda} (matches Torch)")
+nvcc = shutil.which("nvcc")
+if nvcc is None:
+    raise SystemExit(
+        "nvcc is unavailable. Use pytorch/pytorch:2.12.1-cuda13.0-cudnn9-devel "
+        "(not a runtime-only image)."
+    )
+output = subprocess.check_output([nvcc, "--version"], text=True)
+match = re.search(r"release\s+(\d+\.\d+)", output)
+if not match:
+    raise SystemExit(f"Could not parse nvcc version:\n{output}")
+compiler_cuda = match.group(1)
+if version_tuple(compiler_cuda) != version_tuple(expected_cuda):
+    raise SystemExit(
+        f"Expected CUDA {expected_cuda} toolkit, got nvcc {compiler_cuda}. "
+        "Use pytorch/pytorch:2.12.1-cuda13.0-cudnn9-devel."
+    )
+if version_tuple(compiler_cuda) != version_tuple(torch.version.cuda):
+    raise SystemExit(
+        f"CUDA mismatch: nvcc={compiler_cuda}, torch={torch.version.cuda}. "
+        "Choose a Vast template whose Torch and CUDA toolkit match."
+    )
+print(f"nvcc: CUDA {compiler_cuda} (matches Torch)")
 PY
 }
 
 if [[ "${INSTALL_DEPS}" == "1" ]]; then
-  log "Installing dependencies and pinning the RTX 5090 Torch/CUDA stack"
+  log "Installing dependencies and pinning PyTorch 2.12.1 + CUDA 13.0 for RTX 5090"
   "${PYTHON_BIN}" -m pip install -U pip setuptools wheel packaging ninja
-  "${PYTHON_BIN}" -m pip install torch==2.7.1 \
-    --index-url https://download.pytorch.org/whl/cu128
+  "${PYTHON_BIN}" -m pip install torch==2.12.1 \
+    --index-url https://download.pytorch.org/whl/cu130
   check_torch_cuda
   "${PYTHON_BIN}" -m pip install 'numpy<2'
   "${PYTHON_BIN}" -m pip install -e . --no-deps
@@ -184,14 +203,32 @@ PY
 
 "${PYTHON_BIN}" - <<'PY'
 import torch
-from flash_attn import flash_attn_qkvpacked_func
+from flash_attn import flash_attn_qkvpacked_func, flash_attn_with_kvcache
 
-# Exercise an sm_120 forward and backward kernel before any large downloads.
+# Exercise the exact training and collector APIs used by AMAGO 3.4.0 before
+# any large downloads. Both calls must execute native sm_120 kernels.
 qkv = torch.randn(2, 64, 3, 4, 32, device="cuda", dtype=torch.bfloat16, requires_grad=True)
 out = flash_attn_qkvpacked_func(qkv, causal=True, window_size=(32, 0))
 out.float().square().mean().backward()
+
+step_qkv = torch.randn(2, 1, 3, 4, 32, device="cuda", dtype=torch.bfloat16)
+q, k, v = step_qkv.unbind(2)
+k_cache = torch.randn(2, 64, 4, 32, device="cuda", dtype=torch.bfloat16)
+v_cache = torch.randn_like(k_cache)
+cache_seqlens = torch.tensor([0, 7], device="cuda", dtype=torch.int32)
+cached_out = flash_attn_with_kvcache(
+    q=q,
+    k_cache=k_cache,
+    v_cache=v_cache,
+    k=k,
+    v=v,
+    cache_seqlens=cache_seqlens,
+    causal=True,
+    window_size=(32, 0),
+)
+assert cached_out.shape == q.shape and torch.isfinite(cached_out).all()
 torch.cuda.synchronize()
-print("FlashAttention RTX 5090 forward/backward smoke test succeeded")
+print("FlashAttention RTX 5090 training and KV-cache smoke tests succeeded")
 PY
 
 if [[ "${WANDB_MODE}" == "online" && -z "${WANDB_API_KEY:-}" ]]; then
