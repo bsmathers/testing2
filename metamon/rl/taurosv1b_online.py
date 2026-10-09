@@ -34,6 +34,12 @@ import gin
 import torch
 import wandb
 
+try:
+    torch._inductor.config.triton.cudagraph_skip_dynamic_graphs = True
+except AttributeError:
+    # Older Torch builds do not expose the dynamic CUDA-graph setting.
+    pass
+
 import metamon
 from metamon.data import MetamonDataset
 from metamon.interface import (
@@ -287,6 +293,14 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
             )
         return count
 
+    def _move_learner_state(self, device: torch.device | str) -> None:
+        """Move all persistent learner tensors between CUDA and CPU."""
+        self.policy_aclr.to(device)
+        for state in self.optimizer.state.values():
+            for key, value in state.items():
+                if torch.is_tensor(value):
+                    state[key] = value.to(device)
+
     def _collect_with_parallel_processes(self) -> None:
         cfg = self._parallel_collector_config
         if cfg is None:
@@ -306,11 +320,14 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
         )
         if collector_stagger < 0:
             raise ValueError("METAMON_COLLECTOR_START_STAGGER_SECONDS must be non-negative")
-        # Learner activations from the preceding phase are no longer live, but
-        # PyTorch's allocator may retain their blocks. Return those blocks before
-        # launching several GPU collector processes.
-        if torch.cuda.is_available():
+        learner_device = self.accelerator.device
+        learner_offloaded = learner_device.type == "cuda"
+        if learner_offloaded:
+            # Collection and learning are separate phases. Do not leave the
+            # learner model, optimizer, or cached training blocks resident while
+            # the collector processes use the GPU.
             torch.cuda.synchronize()
+            self._move_learner_state("cpu")
             torch.cuda.empty_cache()
         print(
             f"[parallel collection] epoch {self.epoch}: {cfg['processes']} processes x "
@@ -442,6 +459,11 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
         finally:
             for _, log_file, _ in children:
                 log_file.close()
+            if learner_offloaded:
+                # All child processes have exited (or were terminated above), so
+                # collector CUDA contexts are gone before restoring the learner.
+                torch.cuda.empty_cache()
+                self._move_learner_state(learner_device)
 
         elapsed = max(time.monotonic() - started, 1e-9)
         completed = max(self._trajectory_count(cfg["buffer_dir"]) - before, 0)
