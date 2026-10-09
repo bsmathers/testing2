@@ -8,9 +8,8 @@ set -Eeuo pipefail
 #   REPO_DIR/policy/                  3 epoch-475 shards + checksum
 #   REPO_DIR/teams_replay/good_teams  807 .txt/.gen1ou_team files
 #
-# Target Vast host: RTX 5090 (32 GiB), CUDA 13+, PyTorch 2.12.1,
+# Target Vast host: RTX 5090 (32 GiB), CUDA-capable PyTorch environment,
 # 16+ CPU cores, and 64+ GiB system RAM.
-# Recommended image: pytorch/pytorch:2.12.1-cuda13.0-cudnn9-devel
 # Persistent outputs default to /workspace/smallg1onlinev1a.
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -33,8 +32,6 @@ GRAD_ACCUM="${GRAD_ACCUM:-2}"
 MIXED_PRECISION="${MIXED_PRECISION:-no}"
 PREFILL_FILES="${PREFILL_FILES:-5001}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
-EXPECTED_TORCH_VERSION="2.12.1"
-MIN_CUDA_MAJOR="13"
 
 CACHE_DIR="${PERSIST_ROOT}/cache"
 SAVE_DIR="${PERSIST_ROOT}/checkpoints"
@@ -65,12 +62,7 @@ export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,gen1ou,epoch475,807-teams,vast
 export WANDB_MODE="${WANDB_MODE:-online}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-export MAX_JOBS="${MAX_JOBS:-8}"
-export FLASH_ATTN_CUDA_ARCHS="${FLASH_ATTN_CUDA_ARCHS:-120}"
-export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.0}"
-export FLASH_ATTENTION_FORCE_BUILD=TRUE
 export HF_XET_HIGH_PERFORMANCE=1
-export EXPECTED_TORCH_VERSION MIN_CUDA_MAJOR
 
 cd "${REPO_DIR}"
 [[ "${COLLECTOR_PROCESSES}" =~ ^[1-9][0-9]*$ ]] || die "COLLECTOR_PROCESSES must be a positive integer"
@@ -98,85 +90,23 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 df -h "${PERSIST_ROOT}"
 df -i "${PERSIST_ROOT}"
 
-check_torch_cuda() {
+check_runtime() {
   "${PYTHON_BIN}" - <<'PY'
-import re
-import os
-import shutil
-import subprocess
 import sys
 
 import torch
 
-if sys.version_info[:2] not in {(3, 11), (3, 12)}:
-    raise SystemExit(
-        f"Use Python 3.11 or 3.12 for the pinned Torch/FlashAttention stack; got {sys.version.split()[0]}"
-    )
-
-def version_tuple(value):
-    match = re.match(r"(\d+)\.(\d+)", value or "")
-    if not match:
-        raise SystemExit(f"Could not parse version: {value!r}")
-    return tuple(map(int, match.groups()))
-
 print(f"Python: {sys.version.split()[0]}")
 print(f"Torch: {torch.__version__}; compiled CUDA: {torch.version.cuda}")
-torch_release = torch.__version__.split("+")[0]
-expected_torch = os.environ["EXPECTED_TORCH_VERSION"]
-min_cuda_major = int(os.environ["MIN_CUDA_MAJOR"])
-if torch_release != expected_torch:
-    raise SystemExit(f"Expected torch {expected_torch}, got {torch.__version__}")
-if torch.version.cuda is None:
-    raise SystemExit("This is a CPU-only Torch build; select a CUDA PyTorch template")
-torch_cuda = version_tuple(torch.version.cuda)
-if torch_cuda[0] < min_cuda_major:
-    raise SystemExit(
-        f"CUDA {min_cuda_major}+ is required; Torch was built for CUDA {torch.version.cuda}"
-    )
 if not torch.cuda.is_available():
-    raise SystemExit("CUDA is not available to PyTorch; check the Vast GPU/template configuration")
+    raise SystemExit("CUDA is not available to PyTorch")
 print(f"GPU: {torch.cuda.get_device_name(0)}; VRAM: {torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} GiB")
-if torch.cuda.get_device_capability(0) != (12, 0):
-    raise SystemExit(
-        f"This launcher builds FlashAttention for RTX 5090 sm_120; got compute capability "
-        f"{torch.cuda.get_device_capability(0)}"
-    )
-if torch.cuda.get_device_properties(0).total_memory < 30 * 2**30:
-    raise SystemExit(
-        "The default shared learner/collector settings require at least 30 GiB VRAM. "
-        "For a smaller GPU, explicitly reduce LANES and batch settings."
-    )
-
-nvcc = shutil.which("nvcc")
-if nvcc is None:
-    raise SystemExit(
-        "nvcc is unavailable. Use a CUDA 13+ development image, not a runtime-only image."
-    )
-output = subprocess.check_output([nvcc, "--version"], text=True)
-match = re.search(r"release\s+(\d+\.\d+)", output)
-if not match:
-    raise SystemExit(f"Could not parse nvcc version:\n{output}")
-compiler_cuda = match.group(1)
-compiler_cuda_tuple = version_tuple(compiler_cuda)
-if compiler_cuda_tuple[0] < min_cuda_major:
-    raise SystemExit(
-        f"CUDA {min_cuda_major}+ toolkit required; got nvcc {compiler_cuda}."
-    )
-if compiler_cuda_tuple[0] != torch_cuda[0]:
-    raise SystemExit(
-        f"CUDA major-version mismatch: nvcc={compiler_cuda}, torch={torch.version.cuda}."
-    )
-print(f"nvcc: CUDA {compiler_cuda}; Torch CUDA {torch.version.cuda} (compatible major version)")
 PY
 }
 
 if [[ "${INSTALL_DEPS}" == "1" ]]; then
-  log "Installing dependencies and pinning PyTorch 2.12.1 with CUDA 13+ support for RTX 5090"
+  log "Installing project dependencies while preserving the image's PyTorch, CUDA, NumPy, and FlashAttention stack"
   "${PYTHON_BIN}" -m pip install -U pip setuptools wheel packaging ninja
-  "${PYTHON_BIN}" -m pip install torch==2.12.1 \
-    --index-url https://download.pytorch.org/whl/cu130
-  check_torch_cuda
-  "${PYTHON_BIN}" -m pip install 'numpy<2'
   "${PYTHON_BIN}" -m pip install -e . --no-deps
   "${PYTHON_BIN}" -m pip install \
     'gymnasium>=0.26,<=0.29.1' gin-config wandb einops tqdm lz4 termcolor rich \
@@ -184,11 +114,9 @@ if [[ "${INSTALL_DEPS}" == "1" ]]; then
     'websockets==12.0' \
     'poke-env @ git+https://github.com/UT-Austin-RPL/poke-env.git' \
     'amago @ git+https://github.com/UT-Austin-RPL/amago@v3.4.0'
-  "${PYTHON_BIN}" -m pip install --force-reinstall --no-deps --no-build-isolation \
-    'git+https://github.com/Dao-AILab/flash-attention.git@94e22c906678e5483fa0e9e24d8e787bc2c0ed4c'
 fi
 
-check_torch_cuda
+check_runtime
 "${PYTHON_BIN}" - <<'PY'
 import amago
 import flash_attn
