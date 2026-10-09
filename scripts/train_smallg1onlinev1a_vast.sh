@@ -26,6 +26,7 @@ WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-sequential192-750-v1}"
 WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a-sequential192-750}"
 LANES="${LANES:-192}"
 COLLECTOR_WORKERS="${COLLECTOR_WORKERS:-16}"
+COLLECTOR_PROCESSES="${COLLECTOR_PROCESSES:-4}"
 DLOADER_WORKERS="${DLOADER_WORKERS:-8}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-14}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
@@ -106,10 +107,13 @@ export HF_XET_HIGH_PERFORMANCE=1
 export METAMON_PARTIAL_HIDDEN_CHUNK="${PARTIAL_HIDDEN_CHUNK}"
 export METAMON_VEC_PROFILE="${METAMON_VEC_PROFILE:-1}"
 export METAMON_VEC_PROFILE_INTERVAL="${VEC_PROFILE_INTERVAL}"
+export METAMON_COLLECTOR_PROCESSES="${COLLECTOR_PROCESSES}"
+export METAMON_PARALLEL_COLLECTOR_LOG_DIR="${LOG_DIR}/parallel-collectors"
 
 cd "${REPO_DIR}"
 [[ "${LANES}" =~ ^[1-9][0-9]*$ ]] || die "LANES must be a positive integer"
 [[ "${COLLECTOR_WORKERS}" =~ ^[1-9][0-9]*$ ]] || die "COLLECTOR_WORKERS must be a positive integer"
+[[ "${COLLECTOR_PROCESSES}" =~ ^[1-9][0-9]*$ ]] || die "COLLECTOR_PROCESSES must be a positive integer"
 [[ "${DLOADER_WORKERS}" =~ ^[0-9]+$ ]] || die "DLOADER_WORKERS must be a non-negative integer"
 [[ "${BATCH_SIZE_PER_GPU}" =~ ^[1-9][0-9]*$ ]] || die "BATCH_SIZE_PER_GPU must be a positive integer"
 [[ "${GRAD_ACCUM}" =~ ^[1-9][0-9]*$ ]] || die "GRAD_ACCUM must be a positive integer"
@@ -120,6 +124,13 @@ cd "${REPO_DIR}"
   || die "VEC_PROFILE_INTERVAL must be a non-negative integer"
 (( LANES % COLLECTOR_WORKERS == 0 )) \
   || die "LANES (${LANES}) must be divisible by COLLECTOR_WORKERS (${COLLECTOR_WORKERS})"
+(( LANES % COLLECTOR_PROCESSES == 0 )) \
+  || die "LANES (${LANES}) must be divisible by COLLECTOR_PROCESSES (${COLLECTOR_PROCESSES})"
+(( COLLECTOR_WORKERS % COLLECTOR_PROCESSES == 0 )) \
+  || die "COLLECTOR_WORKERS (${COLLECTOR_WORKERS}) must be divisible by COLLECTOR_PROCESSES (${COLLECTOR_PROCESSES})"
+
+LANES_PER_COLLECTOR="$(( LANES / COLLECTOR_PROCESSES ))"
+WORKERS_PER_COLLECTOR="$(( COLLECTOR_WORKERS / COLLECTOR_PROCESSES ))"
 
 if [[ "${INSTALL_DEPS}" == "1" && "$(id -u)" -eq 0 ]] && command -v apt-get >/dev/null; then
   log "Installing required system build tools"
@@ -447,11 +458,9 @@ else
 fi
 
 COLLECTOR_PIDS=()
+PREFILL_RUNTIME_ROOT=""
 cleanup_collectors() {
   local pid
-  if (( ${#COLLECTOR_PIDS[@]} == 0 )); then
-    return
-  fi
   for pid in "${COLLECTOR_PIDS[@]}"; do
     kill "${pid}" 2>/dev/null || true
   done
@@ -459,19 +468,33 @@ cleanup_collectors() {
     wait "${pid}" 2>/dev/null || true
   done
   COLLECTOR_PIDS=()
+  if [[ -n "${PREFILL_RUNTIME_ROOT}" ]]; then
+    case "${PREFILL_RUNTIME_ROOT}" in
+      /tmp/smallg1onlinev1a-prefill.*) rm -rf -- "${PREFILL_RUNTIME_ROOT}" ;;
+      *) die "Refusing to clean unexpected prefill runtime: ${PREFILL_RUNTIME_ROOT}" ;;
+    esac
+    PREFILL_RUNTIME_ROOT=""
+  fi
 }
 trap cleanup_collectors EXIT
 trap 'exit 130' INT TERM
 
-start_prefill_collector() {
-  local seed="$1"
+start_prefill_collectors() {
+  local worker_id
   COLLECTOR_PIDS=()
-  "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
-    --run_config "${RUN_CONFIG}" --mode collect \
-    --save_dir "${SAVE_DIR}" --buffer_dir "${BUFFER_DIR}" \
-    --base_weights "${LATEST}" --epochs 1000000 --seed "${seed}" \
-    > >(tee -a "${LOG_DIR}/collector-prefill.log") 2>&1 &
-  COLLECTOR_PIDS+=("$!")
+  PREFILL_RUNTIME_ROOT="$(mktemp -d /tmp/smallg1onlinev1a-prefill.XXXXXX)"
+  for (( worker_id = 0; worker_id < COLLECTOR_PROCESSES; worker_id++ )); do
+    METAMON_PARALLEL_COLLECTOR_CHILD=1 METAMON_COLLECTOR_PROCESSES=1 \
+      "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
+      --run_config "${RUN_CONFIG}" --mode collect \
+      --run_name "${RUN_NAME}-prefill-${worker_id}" \
+      --save_dir "${PREFILL_RUNTIME_ROOT}/worker-${worker_id}" \
+      --buffer_dir "${BUFFER_DIR}" --dset_max_size 1000000000 \
+      --base_weights "${LATEST}" --epochs 1000000 --seed "${worker_id}" \
+      --lanes "${LANES_PER_COLLECTOR}" --n_workers "${WORKERS_PER_COLLECTOR}" \
+      > >(tee -a "${LOG_DIR}/collector-prefill-${worker_id}.log") 2>&1 &
+    COLLECTOR_PIDS+=("$!")
+  done
 }
 
 fifo_count() {
@@ -485,11 +508,12 @@ if (( current < PREFILL_FILES )); then
   prefill_last_count="${current}"
   prefill_start_time="$(date +%s)"
   prefill_last_time="${prefill_start_time}"
-  start_prefill_collector 0
+  log "Starting ${COLLECTOR_PROCESSES} prefill collectors: ${LANES_PER_COLLECTOR} lanes and ${WORKERS_PER_COLLECTOR} Zig workers each"
+  start_prefill_collectors
   while (( current < PREFILL_FILES )); do
     sleep 30
     for pid in "${COLLECTOR_PIDS[@]}"; do
-      kill -0 "${pid}" 2>/dev/null || die "The prefill collector exited; inspect ${LOG_DIR}/collector-prefill.log"
+      kill -0 "${pid}" 2>/dev/null || die "A prefill collector exited; inspect ${LOG_DIR}/collector-prefill-*.log"
     done
     current="$(fifo_count)"
     prefill_now_time="$(date +%s)"
@@ -514,7 +538,7 @@ else
 fi
 
 log "Launching synchronized SmallG1OnlineV1a collection + learning with W&B run ${WANDB_PROJECT}/${WANDB_RUN_ID}"
-log "Each epoch collects 750 steps across ${LANES} lanes, then performs 1000 updates at ${BATCH_SIZE_PER_GPU}x${GRAD_ACCUM}"
+log "Each epoch collects ${COLLECTOR_PROCESSES}x(${LANES_PER_COLLECTOR} lanes x 750 steps), then performs 1000 updates at ${BATCH_SIZE_PER_GPU}x${GRAD_ACCUM}"
 set +e
 "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
   --run_config "${RUN_CONFIG}" --mode both \

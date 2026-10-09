@@ -19,7 +19,13 @@ module is left available for historical reproducibility of existing runs.
 from __future__ import annotations
 
 import collections
+import json
 import os
+import random
+import subprocess
+import sys
+import tempfile
+import time
 from argparse import ArgumentParser
 from typing import Any, Optional
 
@@ -221,6 +227,222 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
     def __init__(self, *args, **kwargs):
         kwargs["mixed_precision"] = self.requested_mixed_precision
         super().__init__(*args, **kwargs)
+        self._parallel_collector_config: Optional[dict[str, Any]] = None
+
+    def configure_parallel_collectors(
+        self,
+        *,
+        processes: int,
+        total_lanes: int,
+        total_workers: int,
+        timesteps: int,
+        run_config: str,
+        train_pool: str,
+        battle_format: str,
+        buffer_dir: str,
+        log_dir: str,
+        seed: int,
+    ) -> None:
+        """Collect one epoch through independent Python processes.
+
+        The vectorized simulator is fast enough that its Python parsing and
+        observation wrapper become GIL-bound. Splitting the fixed lane budget
+        across processes preserves the exact number of lane-transitions while
+        allowing several CPU cores to feed the Zig workers and GPU.
+        """
+        values = {
+            "processes": int(processes),
+            "total_lanes": int(total_lanes),
+            "total_workers": int(total_workers),
+            "timesteps": int(timesteps),
+        }
+        if any(value <= 0 for value in values.values()):
+            raise ValueError(f"Parallel collector values must be positive: {values}")
+        if values["total_lanes"] % values["processes"]:
+            raise ValueError("total_lanes must be divisible by collector processes")
+        if values["total_workers"] % values["processes"]:
+            raise ValueError("total_workers must be divisible by collector processes")
+        self._parallel_collector_config = {
+            **values,
+            "run_config": os.path.abspath(run_config),
+            "train_pool": os.path.abspath(train_pool),
+            "battle_format": str(battle_format),
+            "buffer_dir": os.path.abspath(buffer_dir),
+            "log_dir": os.path.abspath(log_dir),
+            "seed": int(seed),
+        }
+        os.makedirs(self._parallel_collector_config["log_dir"], exist_ok=True)
+        # The learn loop uses this only as the collection-phase gate. Each child
+        # receives the same number of vector steps on its lane shard.
+        self.start_collecting_at_epoch = 0
+        self.train_timesteps_per_epoch = values["timesteps"]
+
+    @staticmethod
+    def _trajectory_count(buffer_dir: str) -> int:
+        count = 0
+        for _, _, filenames in os.walk(buffer_dir):
+            count += sum(
+                name.endswith(".json") or name.endswith(".json.lz4")
+                for name in filenames
+            )
+        return count
+
+    def _collect_with_parallel_processes(self) -> None:
+        cfg = self._parallel_collector_config
+        if cfg is None:
+            raise RuntimeError("Parallel collectors were not configured")
+
+        per_process_lanes = cfg["total_lanes"] // cfg["processes"]
+        per_process_workers = cfg["total_workers"] // cfg["processes"]
+        latest_policy = os.path.join(self.ckpt_dir, "latest", "policy.pt")
+        if not os.path.isfile(latest_policy):
+            raise FileNotFoundError(f"Parallel collector policy is missing: {latest_policy}")
+
+        before = self._trajectory_count(cfg["buffer_dir"])
+        started = time.monotonic()
+        children: list[tuple[subprocess.Popen, Any, str]] = []
+        print(
+            f"[parallel collection] epoch {self.epoch}: {cfg['processes']} processes x "
+            f"{per_process_lanes} lanes x {cfg['timesteps']} steps "
+            f"({per_process_workers} Zig workers/process)",
+            flush=True,
+        )
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix=f"smallg1onlinev1a-collect-epoch-{self.epoch}-"
+            ) as runtime_root:
+                # A single vector env draws one shared opponent per epoch. Keep
+                # that semantic across process shards by resolving the pool once
+                # in the parent, then giving every child a singleton pool.
+                from metamon.rl.evaluate.opponent_pool import load_opponent_pool
+
+                opponent_seed = cfg["seed"] + self.epoch
+                random_state = random.getstate()
+                try:
+                    random.seed(opponent_seed)
+                    opponent_pool = load_opponent_pool(
+                        cfg["train_pool"], battle_format=cfg["battle_format"]
+                    )
+                    opponent_pool.rng.seed(opponent_seed)
+                    opponent_spec = opponent_pool.sample_opponent()
+                finally:
+                    random.setstate(random_state)
+                epoch_pool_path = os.path.join(runtime_root, "epoch-opponent.yaml")
+                with open(epoch_pool_path, "w", encoding="utf-8") as pool_file:
+                    json.dump(
+                        {
+                            "defaults": {
+                                "team_set": opponent_spec.team_set,
+                                "battle_backend": opponent_spec.battle_backend,
+                                "checkpoints": [opponent_spec.checkpoint],
+                                "temperatures": [opponent_spec.temperature],
+                                "num_agents": 1,
+                            },
+                            "agents": {
+                                "EpochOpponent": {
+                                    "model_name": opponent_spec.model_name
+                                }
+                            },
+                        },
+                        pool_file,
+                    )
+                print(
+                    f"[parallel collection] shared opponent: {opponent_spec.short_label}",
+                    flush=True,
+                )
+
+                for worker_id in range(cfg["processes"]):
+                    log_path = os.path.join(
+                        cfg["log_dir"], f"parallel-collector-{worker_id:02d}.log"
+                    )
+                    log_file = open(log_path, "a", encoding="utf-8")
+                    log_file.write(f"\n===== parent epoch {self.epoch} =====\n")
+                    log_file.flush()
+                    child_save_dir = os.path.join(runtime_root, f"worker-{worker_id}")
+                    command = [
+                        sys.executable,
+                        "-m",
+                        "metamon.rl.taurosv1b_online",
+                        "--run_config",
+                        cfg["run_config"],
+                        "--mode",
+                        "collect",
+                        "--train_pool",
+                        epoch_pool_path,
+                        "--run_name",
+                        f"{self.run_name}-collector-{worker_id:02d}",
+                        "--save_dir",
+                        child_save_dir,
+                        "--buffer_dir",
+                        cfg["buffer_dir"],
+                        "--base_weights",
+                        latest_policy,
+                        "--epochs",
+                        "1",
+                        "--lanes",
+                        str(per_process_lanes),
+                        "--n_workers",
+                        str(per_process_workers),
+                        "--train_timesteps_per_epoch",
+                        str(cfg["timesteps"]),
+                        "--dset_max_size",
+                        "1000000000",
+                        "--val_timesteps",
+                        "0",
+                        "--seed",
+                        str((self.epoch * cfg["processes"]) + worker_id),
+                    ]
+                    child_env = os.environ.copy()
+                    child_env["METAMON_PARALLEL_COLLECTOR_CHILD"] = "1"
+                    child_env["METAMON_COLLECTOR_PROCESSES"] = "1"
+                    process = subprocess.Popen(
+                        command,
+                        env=child_env,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                    )
+                    children.append((process, log_file, log_path))
+
+                failures = []
+                for process, _, log_path in children:
+                    status = process.wait()
+                    if status:
+                        failures.append((process.pid, status, log_path))
+                if failures:
+                    detail = "; ".join(
+                        f"pid {pid} exited {status} (log: {path})"
+                        for pid, status, path in failures
+                    )
+                    raise RuntimeError(f"Parallel collection failed: {detail}")
+        except BaseException:
+            for process, _, _ in children:
+                if process.poll() is None:
+                    process.terminate()
+            for process, _, _ in children:
+                if process.poll() is None:
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+            raise
+        finally:
+            for _, log_file, _ in children:
+                log_file.close()
+
+        elapsed = max(time.monotonic() - started, 1e-9)
+        completed = max(self._trajectory_count(cfg["buffer_dir"]) - before, 0)
+        print(
+            f"[parallel collection] epoch {self.epoch}: {completed} completed games "
+            f"in {elapsed:.1f}s ({completed / elapsed:.2f} games/s)",
+            flush=True,
+        )
+
+    def collect_new_training_data(self) -> None:
+        if self._parallel_collector_config is None:
+            super().collect_new_training_data()
+            return
+        self._collect_with_parallel_processes()
 
     def init_model(self) -> None:
         """Build the policy with an optional nonzero linear LR warmup.
@@ -454,6 +676,21 @@ def main() -> None:
                 action.required = False
     args = parser.parse_args()
 
+    collector_processes = int(os.environ.get("METAMON_COLLECTOR_PROCESSES", "1"))
+    if collector_processes < 1:
+        raise ValueError("METAMON_COLLECTOR_PROCESSES must be positive")
+    is_collector_child = os.environ.get("METAMON_PARALLEL_COLLECTOR_CHILD") == "1"
+    use_parallel_collectors = (
+        args.mode == "both" and collector_processes > 1 and not is_collector_child
+    )
+    if use_parallel_collectors:
+        if args.run_config is None:
+            raise ValueError("Parallel collectors require --run_config")
+        if args.lanes % collector_processes:
+            raise ValueError("--lanes must be divisible by METAMON_COLLECTOR_PROCESSES")
+        if args.n_workers % collector_processes:
+            raise ValueError("--n_workers must be divisible by METAMON_COLLECTOR_PROCESSES")
+
     # E/F rely on the periodic TaurosV0 monitor as a training health check.
     # Install it explicitly here rather than relying only on the gin import side
     # effect, and fail fast if someone launches a learner without W&B logging or
@@ -553,11 +790,14 @@ def main() -> None:
     config_save_path = os.path.join(args.save_dir, args.run_name, "dataset_config.yaml")
     save_dataset_config(flatten_config(dataset_config), config_save_path)
 
+    # With parallel collectors, the parent owns only the learner and dataset.
+    # Collection comes from short-lived collect-only child processes.
+    experiment_mode = "learn" if use_parallel_collectors else args.mode
     experiment = _create_experiment_with_safe_class(
         mixed_precision=args.mixed_precision,
         full_state_interval=args.full_state_ckpt_interval,
         lr_warmup_start_lr=args.lr_warmup_start_lr,
-        mode=args.mode,
+        mode=experiment_mode,
         run_name=args.run_name,
         save_dir=args.save_dir,
         pretrained=pretrained,
@@ -592,6 +832,16 @@ def main() -> None:
     )
     experiment.start()
 
+    if is_collector_child:
+        # Children load an explicit immutable parent snapshot. Do not look for
+        # or write rolling weights in their temporary runtime directories.
+        experiment.always_load_latest = False
+        experiment.always_save_latest = False
+        # AMAGO's collect-only helper normally forces one million epochs. An
+        # epoch shard launched by the parent must honor its explicit --epochs 1;
+        # long-running prefill children already pass --epochs 1000000.
+        experiment.epochs = args.epochs
+
     if args.resume_training_state:
         resume_epoch = (
             args.resume_epoch
@@ -616,6 +866,24 @@ def main() -> None:
         ckpt_path = _explicit_checkpoint_path(args, pretrained)
         experiment.load_checkpoint_from_path(ckpt_path, is_accelerate_state=False)
         print(f"Loaded initial weights: {ckpt_path}")
+
+    if use_parallel_collectors:
+        experiment.write_latest_policy()
+        experiment.configure_parallel_collectors(
+            processes=collector_processes,
+            total_lanes=args.lanes,
+            total_workers=args.n_workers,
+            timesteps=args.train_timesteps_per_epoch,
+            run_config=args.run_config,
+            train_pool=args.train_pool,
+            battle_format=battle_format,
+            buffer_dir=args.buffer_dir,
+            log_dir=os.environ.get(
+                "METAMON_PARALLEL_COLLECTOR_LOG_DIR",
+                os.path.join(os.path.abspath(args.save_dir), args.run_name, "collector_logs"),
+            ),
+            seed=args.seed,
+        )
 
     experiment.learn()
     if args.log:
