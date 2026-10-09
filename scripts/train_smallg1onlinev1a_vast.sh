@@ -10,27 +10,27 @@ set -Eeuo pipefail
 #
 # Target Vast host: RTX 5090 (32 GiB), CUDA-capable PyTorch environment,
 # 16 CPU cores, and 32+ GiB system RAM.
-# Persistent outputs default to /workspace/smallg1onlinev1a-sequential128 so
-# this run cannot accidentally resume either earlier asynchronous experiment.
+# Persistent outputs default to /workspace/smallg1onlinev1a-sequential128-750
+# so this run cannot accidentally resume any earlier experiment.
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-PERSIST_ROOT="${PERSIST_ROOT:-/workspace/smallg1onlinev1a-sequential128}"
+PERSIST_ROOT="${PERSIST_ROOT:-/workspace/smallg1onlinev1a-sequential128-750}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-RUN_NAME="${RUN_NAME:-smallg1onlinev1a-sequential128}"
+RUN_NAME="${RUN_NAME:-smallg1onlinev1a-sequential128-750}"
 WANDB_PROJECT="${METAMON_WANDB_PROJECT:-smallg1onlinev1a}"
-WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-sequential128-v1}"
-WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a-sequential128}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-sequential128-750-v1}"
+WANDB_NAME="${WANDB_NAME:-smallg1onlinev1a-sequential128-750}"
 LANES="${LANES:-128}"
 COLLECTOR_WORKERS="${COLLECTOR_WORKERS:-16}"
 DLOADER_WORKERS="${DLOADER_WORKERS:-8}"
 BATCH_SIZE_PER_GPU="${BATCH_SIZE_PER_GPU:-14}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
 MIXED_PRECISION="${MIXED_PRECISION:-no}"
-PREFILL_FILES="${PREFILL_FILES:-5001}"
+PREFILL_FILES="${PREFILL_FILES:-25000}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
 
 CACHE_DIR="${CACHE_DIR:-${PERSIST_ROOT}/cache}"
@@ -58,7 +58,7 @@ export METAMON_WANDB_PROJECT="${WANDB_PROJECT}"
 export WANDB_RUN_ID WANDB_NAME
 export WANDB_RESUME="${WANDB_RESUME:-allow}"
 export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-smallg1onlinev1a}"
-export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,sequential128,14x1,gen1ou,epoch475,807-teams,vast,zig}"
+export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,sequential128,collect750,14x1,gen1ou,epoch475,807-teams,vast,zig}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
@@ -313,7 +313,7 @@ full_state_ckpt_interval: 10
 mixed_precision: "${MIXED_PRECISION}"
 lanes: ${LANES}
 n_workers: ${COLLECTOR_WORKERS}
-train_timesteps_per_epoch: 500
+train_timesteps_per_epoch: 750
 temp_low: 1.0
 temp_high: 2.0
 val_timesteps: 0
@@ -449,7 +449,7 @@ else
 fi
 
 log "Launching synchronized SmallG1OnlineV1a collection + learning with W&B run ${WANDB_PROJECT}/${WANDB_RUN_ID}"
-log "Each epoch collects 500 steps across ${LANES} lanes, then performs 1000 updates at ${BATCH_SIZE_PER_GPU}x${GRAD_ACCUM}"
+log "Each epoch collects 750 steps across ${LANES} lanes, then performs 1000 updates at ${BATCH_SIZE_PER_GPU}x${GRAD_ACCUM}"
 set +e
 "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
   --run_config "${RUN_CONFIG}" --mode both \
