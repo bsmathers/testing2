@@ -241,7 +241,7 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
         battle_format: str,
         buffer_dir: str,
         log_dir: str,
-        seed: int,
+        seed: Optional[int],
     ) -> None:
         """Collect one epoch through independent Python processes.
 
@@ -269,7 +269,7 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
             "battle_format": str(battle_format),
             "buffer_dir": os.path.abspath(buffer_dir),
             "log_dir": os.path.abspath(log_dir),
-            "seed": int(seed),
+            "seed": 0 if seed is None else int(seed),
         }
         os.makedirs(self._parallel_collector_config["log_dir"], exist_ok=True)
         # The learn loop uses this only as the collection-phase gate. Each child
