@@ -22,6 +22,7 @@ import collections
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -330,6 +331,11 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
                 "METAMON_TRAIN_COLLECTOR_CONCURRENCY must be between 1 and "
                 f"{cfg['processes']}; got {collector_concurrency}"
             )
+        collector_retries = int(
+            os.environ.get("METAMON_TRAIN_COLLECTOR_RETRIES", "0")
+        )
+        if collector_retries < 0:
+            raise ValueError("METAMON_TRAIN_COLLECTOR_RETRIES must be non-negative")
         learner_device = self.accelerator.device
         learner_offloaded = learner_device.type == "cuda"
         if learner_offloaded:
@@ -396,79 +402,149 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
                     wave_end = min(
                         wave_start + collector_concurrency, cfg["processes"]
                     )
-                    wave: list[tuple[subprocess.Popen, Any, str]] = []
                     print(
                         f"[parallel collection] starting shard wave "
                         f"{wave_start + 1}-{wave_end} of {cfg['processes']}",
                         flush=True,
                     )
-                    for worker_id in range(wave_start, wave_end):
-                        log_path = os.path.join(
-                            cfg["log_dir"], f"parallel-collector-{worker_id:02d}.log"
-                        )
-                        log_file = open(log_path, "a", encoding="utf-8")
-                        log_file.write(f"\n===== parent epoch {self.epoch} =====\n")
-                        log_file.flush()
-                        child_save_dir = os.path.join(runtime_root, f"worker-{worker_id}")
-                        command = [
-                            sys.executable,
-                            "-m",
-                            "metamon.rl.taurosv1b_online",
-                            "--run_config",
-                            cfg["run_config"],
-                            "--mode",
-                            "collect",
-                            "--train_pool",
-                            epoch_pool_path,
-                            "--run_name",
-                            f"{self.run_name}-collector-{worker_id:02d}",
-                            "--save_dir",
-                            child_save_dir,
-                            "--buffer_dir",
-                            cfg["buffer_dir"],
-                            "--base_weights",
-                            latest_policy,
-                            "--epochs",
-                            "1",
-                            "--lanes",
-                            str(per_process_lanes),
-                            "--n_workers",
-                            str(per_process_workers),
-                            "--train_timesteps_per_epoch",
-                            str(cfg["timesteps"]),
-                            "--dset_max_size",
-                            "1000000000",
-                            "--val_timesteps",
-                            "0",
-                            "--seed",
-                            str((self.epoch * cfg["processes"]) + worker_id),
-                        ]
-                        child_env = os.environ.copy()
-                        child_env["METAMON_PARALLEL_COLLECTOR_CHILD"] = "1"
-                        child_env["METAMON_COLLECTOR_PROCESSES"] = "1"
-                        process = subprocess.Popen(
-                            command,
-                            env=child_env,
-                            stdout=log_file,
-                            stderr=subprocess.STDOUT,
-                        )
-                        child = (process, log_file, log_path)
-                        children.append(child)
-                        wave.append(child)
-                        if worker_id + 1 < wave_end and collector_stagger:
-                            time.sleep(collector_stagger)
+                    pending = list(range(wave_start, wave_end))
+                    last_failures: list[tuple[int, int, str]] = []
+                    for attempt in range(collector_retries + 1):
+                        wave: list[tuple[subprocess.Popen, Any, str, int, str]] = []
+                        for worker_id in pending:
+                            log_path = os.path.join(
+                                cfg["log_dir"],
+                                f"parallel-collector-{worker_id:02d}.log",
+                            )
+                            log_file = open(log_path, "a", encoding="utf-8")
+                            log_file.write(
+                                f"\n===== parent epoch {self.epoch}, "
+                                f"attempt {attempt + 1} =====\n"
+                            )
+                            log_file.flush()
+                            child_save_dir = os.path.join(
+                                runtime_root, f"worker-{worker_id}-attempt-{attempt}"
+                            )
+                            child_buffer_dir = os.path.join(
+                                runtime_root,
+                                f"buffer-worker-{worker_id}-attempt-{attempt}",
+                            )
+                            command = [
+                                sys.executable,
+                                "-m",
+                                "metamon.rl.taurosv1b_online",
+                                "--run_config",
+                                cfg["run_config"],
+                                "--mode",
+                                "collect",
+                                "--train_pool",
+                                epoch_pool_path,
+                                "--run_name",
+                                f"{self.run_name}-collector-{worker_id:02d}",
+                                "--save_dir",
+                                child_save_dir,
+                                "--buffer_dir",
+                                child_buffer_dir,
+                                "--base_weights",
+                                latest_policy,
+                                "--epochs",
+                                "1",
+                                "--lanes",
+                                str(per_process_lanes),
+                                "--n_workers",
+                                str(per_process_workers),
+                                "--train_timesteps_per_epoch",
+                                str(cfg["timesteps"]),
+                                "--dset_max_size",
+                                "1000000000",
+                                "--val_timesteps",
+                                "0",
+                                "--seed",
+                                str(
+                                    (self.epoch * cfg["processes"])
+                                    + worker_id
+                                    + (attempt * 1_000_000)
+                                ),
+                            ]
+                            child_env = os.environ.copy()
+                            child_env["METAMON_PARALLEL_COLLECTOR_CHILD"] = "1"
+                            child_env["METAMON_COLLECTOR_PROCESSES"] = "1"
+                            process = subprocess.Popen(
+                                command,
+                                env=child_env,
+                                stdout=log_file,
+                                stderr=subprocess.STDOUT,
+                            )
+                            child = (process, log_file, log_path)
+                            children.append(child)
+                            wave.append(
+                                (
+                                    process,
+                                    log_file,
+                                    log_path,
+                                    worker_id,
+                                    child_buffer_dir,
+                                )
+                            )
+                            if worker_id != pending[-1] and collector_stagger:
+                                time.sleep(collector_stagger)
 
-                    failures = []
-                    for process, _, log_path in wave:
-                        status = process.wait()
-                        if status:
-                            failures.append((process.pid, status, log_path))
-                    if failures:
+                        failures = []
+                        failed_workers = []
+                        for process, log_file, log_path, worker_id, staging_dir in wave:
+                            status = process.wait()
+                            log_file.close()
+                            if status:
+                                failures.append((process.pid, status, log_path))
+                                failed_workers.append(worker_id)
+                                continue
+
+                            # Publish only complete shards. Failed attempts remain
+                            # inside runtime_root and are deleted without ever
+                            # entering the learner's FIFO dataset.
+                            for source_root, _, filenames in os.walk(staging_dir):
+                                relative = os.path.relpath(source_root, staging_dir)
+                                destination_root = (
+                                    cfg["buffer_dir"]
+                                    if relative == "."
+                                    else os.path.join(cfg["buffer_dir"], relative)
+                                )
+                                os.makedirs(destination_root, exist_ok=True)
+                                for filename in filenames:
+                                    source = os.path.join(source_root, filename)
+                                    destination = os.path.join(
+                                        destination_root, filename
+                                    )
+                                    if os.path.exists(destination):
+                                        raise FileExistsError(
+                                            "Collector trajectory collision: "
+                                            f"{destination}"
+                                        )
+                                    shutil.move(source, destination)
+
+                        if not failures:
+                            pending = []
+                            break
+                        last_failures = failures
+                        pending = failed_workers
+                        if attempt < collector_retries:
+                            print(
+                                f"[parallel collection] retrying shards "
+                                f"{pending} after transient collector failure "
+                                f"(attempt {attempt + 2} of "
+                                f"{collector_retries + 1})",
+                                flush=True,
+                            )
+
+                    if pending:
                         detail = "; ".join(
                             f"pid {pid} exited {status} (log: {path})"
-                            for pid, status, path in failures
+                            for pid, status, path in last_failures
                         )
-                        raise RuntimeError(f"Parallel collection failed: {detail}")
+                        raise RuntimeError(
+                            f"Parallel collection failed after "
+                            f"{collector_retries + 1} attempts: {detail}"
+                        )
         except BaseException:
             for process, _, _ in children:
                 if process.poll() is None:
@@ -483,7 +559,8 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
             raise
         finally:
             for _, log_file, _ in children:
-                log_file.close()
+                if not log_file.closed:
+                    log_file.close()
             if learner_offloaded:
                 # All child processes have exited (or were terminated above), so
                 # collector CUDA contexts are gone before restoring the learner.

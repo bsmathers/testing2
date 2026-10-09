@@ -29,6 +29,11 @@ HOST_SCRIPT = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "battle_host.js"),
 )
 
+PUMP_TIMEOUT = float(os.environ.get("METAMON_SIM_PUMP_TIMEOUT", "90"))
+PUMP_IDLE_TIMEOUT = float(os.environ.get("METAMON_SIM_PUMP_IDLE_TIMEOUT", "45"))
+if PUMP_TIMEOUT <= 0 or PUMP_IDLE_TIMEOUT <= 0:
+    raise ValueError("Simulator pump timeouts must be positive")
+
 # Binary stdout frame types (must match battle_host.js).
 MSG_READY = 0
 MSG_CHUNK = 1
@@ -322,8 +327,8 @@ class ShowdownSimProcess:
     def pump_until(
         self,
         predicate: Callable[[], bool],
-        timeout: float = 90.0,
-        idle_timeout: float = 45.0,
+        timeout: float = PUMP_TIMEOUT,
+        idle_timeout: float = PUMP_IDLE_TIMEOUT,
     ) -> None:
         """Dispatch host chunks until ``predicate()`` is True."""
         if predicate():
@@ -574,8 +579,8 @@ class ShardedShowdownSimProcess:
     def pump_until(
         self,
         predicate: Callable[[], bool],
-        timeout: float = 90.0,
-        idle_timeout: float = 45.0,
+        timeout: float = PUMP_TIMEOUT,
+        idle_timeout: float = PUMP_IDLE_TIMEOUT,
     ) -> None:
         if predicate():
             return
