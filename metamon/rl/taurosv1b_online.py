@@ -294,14 +294,6 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
             )
         return count
 
-    def _move_learner_state(self, device: torch.device | str) -> None:
-        """Move all persistent learner tensors between CUDA and CPU."""
-        self.policy_aclr.to(device)
-        for state in self.optimizer.state.values():
-            for key, value in state.items():
-                if torch.is_tensor(value):
-                    state[key] = value.to(device)
-
     def _collect_with_parallel_processes(self) -> None:
         cfg = self._parallel_collector_config
         if cfg is None:
@@ -336,14 +328,14 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
         )
         if collector_retries < 0:
             raise ValueError("METAMON_TRAIN_COLLECTOR_RETRIES must be non-negative")
-        learner_device = self.accelerator.device
-        learner_offloaded = learner_device.type == "cuda"
-        if learner_offloaded:
-            # Collection and learning are separate phases. Do not leave the
-            # learner model, optimizer, or cached training blocks resident while
-            # the collector processes use the GPU.
+        learner_uses_cuda = self.accelerator.device.type == "cuda"
+        if learner_uses_cuda:
+            # Release transient training allocations, but leave the parent
+            # learner on CUDA. Moving it and its optimizer to CPU made host RAM
+            # the limiting resource. Collector children still terminate before
+            # the next learner update, so their CUDA contexts do not overlap
+            # learning.
             torch.cuda.synchronize()
-            self._move_learner_state("cpu")
             torch.cuda.empty_cache()
         print(
             f"[parallel collection] epoch {self.epoch}: {cfg['processes']} processes x "
@@ -561,11 +553,10 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
             for _, log_file, _ in children:
                 if not log_file.closed:
                     log_file.close()
-            if learner_offloaded:
-                # All child processes have exited (or were terminated above), so
-                # collector CUDA contexts are gone before restoring the learner.
+            if learner_uses_cuda:
+                # All child processes have exited (or were terminated above),
+                # so collector CUDA contexts are gone before learning resumes.
                 torch.cuda.empty_cache()
-                self._move_learner_state(learner_device)
 
         elapsed = max(time.monotonic() - started, 1e-9)
         completed = max(self._trajectory_count(cfg["buffer_dir"]) - before, 0)
