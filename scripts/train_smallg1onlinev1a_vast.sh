@@ -8,7 +8,7 @@ set -Eeuo pipefail
 #   REPO_DIR/policy/                  3 epoch-475 shards + checksum
 #   REPO_DIR/teams_replay/good_teams  807 .txt/.gen1ou_team files
 #
-# Target Vast host: RTX 5090 (32 GiB), CUDA 13.0, PyTorch 2.12.1+cu130,
+# Target Vast host: RTX 5090 (32 GiB), CUDA 13+, PyTorch 2.12.1,
 # 16+ CPU cores, and 64+ GiB system RAM.
 # Recommended image: pytorch/pytorch:2.12.1-cuda13.0-cudnn9-devel
 # Persistent outputs default to /workspace/smallg1onlinev1a.
@@ -34,7 +34,7 @@ MIXED_PRECISION="${MIXED_PRECISION:-no}"
 PREFILL_FILES="${PREFILL_FILES:-5001}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
 EXPECTED_TORCH_VERSION="2.12.1"
-EXPECTED_CUDA_VERSION="13.0"
+MIN_CUDA_MAJOR="13"
 
 CACHE_DIR="${PERSIST_ROOT}/cache"
 SAVE_DIR="${PERSIST_ROOT}/checkpoints"
@@ -70,7 +70,7 @@ export FLASH_ATTN_CUDA_ARCHS="${FLASH_ATTN_CUDA_ARCHS:-120}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.0}"
 export FLASH_ATTENTION_FORCE_BUILD=TRUE
 export HF_XET_HIGH_PERFORMANCE=1
-export EXPECTED_TORCH_VERSION EXPECTED_CUDA_VERSION
+export EXPECTED_TORCH_VERSION MIN_CUDA_MAJOR
 
 cd "${REPO_DIR}"
 [[ "${COLLECTOR_PROCESSES}" =~ ^[1-9][0-9]*$ ]] || die "COLLECTOR_PROCESSES must be a positive integer"
@@ -123,14 +123,15 @@ print(f"Python: {sys.version.split()[0]}")
 print(f"Torch: {torch.__version__}; compiled CUDA: {torch.version.cuda}")
 torch_release = torch.__version__.split("+")[0]
 expected_torch = os.environ["EXPECTED_TORCH_VERSION"]
-expected_cuda = os.environ["EXPECTED_CUDA_VERSION"]
+min_cuda_major = int(os.environ["MIN_CUDA_MAJOR"])
 if torch_release != expected_torch:
     raise SystemExit(f"Expected torch {expected_torch}, got {torch.__version__}")
 if torch.version.cuda is None:
     raise SystemExit("This is a CPU-only Torch build; select a CUDA PyTorch template")
-if version_tuple(torch.version.cuda) != version_tuple(expected_cuda):
+torch_cuda = version_tuple(torch.version.cuda)
+if torch_cuda[0] < min_cuda_major:
     raise SystemExit(
-        f"Expected a CUDA {expected_cuda} Torch build, got torch CUDA {torch.version.cuda}"
+        f"CUDA {min_cuda_major}+ is required; Torch was built for CUDA {torch.version.cuda}"
     )
 if not torch.cuda.is_available():
     raise SystemExit("CUDA is not available to PyTorch; check the Vast GPU/template configuration")
@@ -149,30 +150,28 @@ if torch.cuda.get_device_properties(0).total_memory < 30 * 2**30:
 nvcc = shutil.which("nvcc")
 if nvcc is None:
     raise SystemExit(
-        "nvcc is unavailable. Use pytorch/pytorch:2.12.1-cuda13.0-cudnn9-devel "
-        "(not a runtime-only image)."
+        "nvcc is unavailable. Use a CUDA 13+ development image, not a runtime-only image."
     )
 output = subprocess.check_output([nvcc, "--version"], text=True)
 match = re.search(r"release\s+(\d+\.\d+)", output)
 if not match:
     raise SystemExit(f"Could not parse nvcc version:\n{output}")
 compiler_cuda = match.group(1)
-if version_tuple(compiler_cuda) != version_tuple(expected_cuda):
+compiler_cuda_tuple = version_tuple(compiler_cuda)
+if compiler_cuda_tuple[0] < min_cuda_major:
     raise SystemExit(
-        f"Expected CUDA {expected_cuda} toolkit, got nvcc {compiler_cuda}. "
-        "Use pytorch/pytorch:2.12.1-cuda13.0-cudnn9-devel."
+        f"CUDA {min_cuda_major}+ toolkit required; got nvcc {compiler_cuda}."
     )
-if version_tuple(compiler_cuda) != version_tuple(torch.version.cuda):
+if compiler_cuda_tuple[0] != torch_cuda[0]:
     raise SystemExit(
-        f"CUDA mismatch: nvcc={compiler_cuda}, torch={torch.version.cuda}. "
-        "Choose a Vast template whose Torch and CUDA toolkit match."
+        f"CUDA major-version mismatch: nvcc={compiler_cuda}, torch={torch.version.cuda}."
     )
-print(f"nvcc: CUDA {compiler_cuda} (matches Torch)")
+print(f"nvcc: CUDA {compiler_cuda}; Torch CUDA {torch.version.cuda} (compatible major version)")
 PY
 }
 
 if [[ "${INSTALL_DEPS}" == "1" ]]; then
-  log "Installing dependencies and pinning PyTorch 2.12.1 + CUDA 13.0 for RTX 5090"
+  log "Installing dependencies and pinning PyTorch 2.12.1 with CUDA 13+ support for RTX 5090"
   "${PYTHON_BIN}" -m pip install -U pip setuptools wheel packaging ninja
   "${PYTHON_BIN}" -m pip install torch==2.12.1 \
     --index-url https://download.pytorch.org/whl/cu130
