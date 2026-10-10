@@ -329,6 +329,7 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
         if collector_retries < 0:
             raise ValueError("METAMON_TRAIN_COLLECTOR_RETRIES must be non-negative")
         learner_uses_cuda = self.accelerator.device.type == "cuda"
+        learner_uses_mps = self.accelerator.device.type == "mps"
         if learner_uses_cuda:
             # Release transient training allocations, but leave the parent
             # learner on CUDA. Moving it and its optimizer to CPU made host RAM
@@ -337,6 +338,9 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
             # learning.
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
+        elif learner_uses_mps:
+            torch.mps.synchronize()
+            torch.mps.empty_cache()
         print(
             f"[parallel collection] epoch {self.epoch}: {cfg['processes']} processes x "
             f"{per_process_lanes} lanes x {cfg['timesteps']} steps "
@@ -557,6 +561,8 @@ class TaurosV1BOnlineExperiment(MetamonOnlineExperiment):
                 # All child processes have exited (or were terminated above),
                 # so collector CUDA contexts are gone before learning resumes.
                 torch.cuda.empty_cache()
+            elif learner_uses_mps:
+                torch.mps.empty_cache()
 
         elapsed = max(time.monotonic() - started, 1e-9)
         completed = max(self._trajectory_count(cfg["buffer_dir"]) - before, 0)

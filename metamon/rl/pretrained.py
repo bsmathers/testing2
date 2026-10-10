@@ -246,7 +246,10 @@ class PretrainedModel:
             [self.model_gin_config_path, self.train_gin_config_path],
             finalize=False,
         )
-        if os.environ.get("METAMON_CPU_COLLECTOR") == "1":
+        if (
+            os.environ.get("METAMON_CPU_COLLECTOR") == "1"
+            or os.environ.get("METAMON_PORTABLE_ATTENTION") == "1"
+        ):
             from metamon.rl.cpu_attention import CPUSlidingWindowAttention
             gin.bind_parameter(
                 "amago.nets.traj_encoders.TformerTrajEncoder.attention_type",

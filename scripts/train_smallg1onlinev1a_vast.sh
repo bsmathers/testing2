@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 PERSIST_ROOT="${PERSIST_ROOT:-/workspace/smallg1onlinev1a-sequential192-750}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+DEVICE_BACKEND="${DEVICE_BACKEND:-cuda}"
+export DEVICE_BACKEND
 RUN_NAME="${RUN_NAME:-smallg1onlinev1a-sequential8x64-750}"
 WANDB_PROJECT="${METAMON_WANDB_PROJECT:-smallg1onlinev1a}"
 WANDB_RUN_ID="${WANDB_RUN_ID:-smallg1onlinev1a-sequential8x64-750-v1}"
@@ -41,6 +43,9 @@ PARTIAL_HIDDEN_CHUNK="${PARTIAL_HIDDEN_CHUNK:-16}"
 VEC_PROFILE_INTERVAL="${VEC_PROFILE_INTERVAL:-750}"
 SIM_PUMP_TIMEOUT="${SIM_PUMP_TIMEOUT:-300}"
 SIM_PUMP_IDLE_TIMEOUT="${SIM_PUMP_IDLE_TIMEOUT:-180}"
+EPOCHS="${EPOCHS:-401}"
+STEPS_PER_EPOCH="${STEPS_PER_EPOCH:-1000}"
+TRAIN_TIMESTEPS_PER_EPOCH="${TRAIN_TIMESTEPS_PER_EPOCH:-750}"
 
 CACHE_DIR="${CACHE_DIR:-${PERSIST_ROOT}/cache}"
 SAVE_DIR="${PERSIST_ROOT}/checkpoints"
@@ -109,7 +114,9 @@ export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-smallg1onlinev1a}"
 export WANDB_TAGS="${WANDB_TAGS:-smallg1onlinev1a,sequential4x128,collect750,14x1,gen1ou,epoch475,807-teams,vast,zig}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 export PYTHONUNBUFFERED=1
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+if [[ "${DEVICE_BACKEND}" == "cuda" ]]; then
+  export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+fi
 export HF_XET_HIGH_PERFORMANCE=1
 export METAMON_PARTIAL_HIDDEN_CHUNK="${PARTIAL_HIDDEN_CHUNK}"
 export METAMON_VEC_PROFILE="${METAMON_VEC_PROFILE:-1}"
@@ -133,6 +140,10 @@ cd "${REPO_DIR}"
 [[ "${BATCH_SIZE_PER_GPU}" =~ ^[1-9][0-9]*$ ]] || die "BATCH_SIZE_PER_GPU must be a positive integer"
 [[ "${GRAD_ACCUM}" =~ ^[1-9][0-9]*$ ]] || die "GRAD_ACCUM must be a positive integer"
 [[ "${MIXED_PRECISION}" =~ ^(no|fp16|bf16)$ ]] || die "MIXED_PRECISION must be no, fp16, or bf16"
+[[ "${DEVICE_BACKEND}" =~ ^(cuda|mps)$ ]] || die "DEVICE_BACKEND must be cuda or mps"
+[[ "${EPOCHS}" =~ ^[1-9][0-9]*$ ]] || die "EPOCHS must be a positive integer"
+[[ "${STEPS_PER_EPOCH}" =~ ^[1-9][0-9]*$ ]] || die "STEPS_PER_EPOCH must be a positive integer"
+[[ "${TRAIN_TIMESTEPS_PER_EPOCH}" =~ ^[1-9][0-9]*$ ]] || die "TRAIN_TIMESTEPS_PER_EPOCH must be a positive integer"
 [[ "${PARTIAL_HIDDEN_CHUNK}" =~ ^[1-9][0-9]*$ ]] \
   || die "PARTIAL_HIDDEN_CHUNK must be a positive integer"
 [[ "${VEC_PROFILE_INTERVAL}" =~ ^[0-9]+$ ]] \
@@ -165,27 +176,43 @@ for required_command in git curl gcc g++ make; do
   command -v "${required_command}" >/dev/null \
     || die "Missing required command: ${required_command}"
 done
-command -v nvidia-smi >/dev/null || die "nvidia-smi is unavailable; start a Vast GPU instance"
-nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+if [[ "${DEVICE_BACKEND}" == "cuda" ]]; then
+  command -v nvidia-smi >/dev/null || die "nvidia-smi is unavailable; start a Vast GPU instance"
+  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+fi
 df -h "${PERSIST_ROOT}"
 df -i "${PERSIST_ROOT}"
 
 check_runtime() {
   "${PYTHON_BIN}" - <<'PY'
+import os
 import sys
 
 import torch
 
 print(f"Python: {sys.version.split()[0]}")
-print(f"Torch: {torch.__version__}; compiled CUDA: {torch.version.cuda}")
-if not torch.cuda.is_available():
-    raise SystemExit("CUDA is not available to PyTorch")
-print(f"GPU: {torch.cuda.get_device_name(0)}; VRAM: {torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} GiB")
+backend = os.environ["DEVICE_BACKEND"]
+print(f"Torch: {torch.__version__}; requested backend: {backend}")
+if backend == "cuda":
+    if not torch.cuda.is_available():
+        raise SystemExit("CUDA is not available to PyTorch")
+    print(f"GPU: {torch.cuda.get_device_name(0)}; VRAM: {torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} GiB")
+elif not torch.backends.mps.is_available():
+    raise SystemExit(
+        "MPS is unavailable (built="
+        f"{torch.backends.mps.is_built()}); use an Apple-Silicon Python/PyTorch build"
+    )
+else:
+    from accelerate import Accelerator
+    device = Accelerator().device
+    if device.type != "mps":
+        raise SystemExit(f"Accelerate selected {device}, expected mps")
+    print(f"MPS is available; Accelerate device: {device}")
 PY
 }
 
 if [[ "${INSTALL_DEPS}" == "1" ]]; then
-  log "Installing project dependencies while preserving the image's PyTorch, CUDA, NumPy, and FlashAttention stack"
+  log "Installing project dependencies while preserving the environment's PyTorch and NumPy stack"
   "${PYTHON_BIN}" -m pip install -U pip setuptools wheel packaging ninja
   "${PYTHON_BIN}" -m pip install -e . --no-deps
   "${PYTHON_BIN}" -m pip install \
@@ -199,7 +226,6 @@ fi
 check_runtime
 "${PYTHON_BIN}" - <<'PY'
 import amago
-import flash_attn
 import gin
 import gymnasium
 import lz4
@@ -208,6 +234,7 @@ import metamon
 print("Required Python imports succeeded")
 PY
 
+if [[ "${DEVICE_BACKEND}" == "cuda" ]]; then
 "${PYTHON_BIN}" - <<'PY'
 import torch
 from flash_attn import flash_attn_qkvpacked_func, flash_attn_with_kvcache
@@ -237,6 +264,21 @@ assert cached_out.shape == q.shape and torch.isfinite(cached_out).all()
 torch.cuda.synchronize()
 print("FlashAttention RTX 5090 training and KV-cache smoke tests succeeded")
 PY
+else
+"${PYTHON_BIN}" - <<'PY'
+import torch
+from metamon.rl.cpu_attention import CPUSlidingWindowAttention
+
+device = torch.device("mps")
+attention = CPUSlidingWindowAttention(causal=True, dropout=0.0).to(device)
+qkv = torch.randn(2, 64, 3, 4, 32, device=device, requires_grad=True)
+out = attention(qkv)
+out.float().square().mean().backward()
+assert out.shape == (2, 64, 4, 32) and torch.isfinite(out).all()
+torch.mps.synchronize()
+print("Portable sliding-window attention MPS smoke test succeeded")
+PY
+fi
 
 if [[ "${WANDB_MODE}" == "online" && -z "${WANDB_API_KEY:-}" ]]; then
   die "WANDB_API_KEY is required when WANDB_MODE=online"
@@ -261,18 +303,27 @@ grep -q 'HIGH-SPEED NATIVE ZIG ENGINE ACTIVE' <<<"${ZIG_PROBE}" \
 
 log "Assembling and validating epoch 475"
 if [[ ! -s "${RAW_WEIGHTS}" ]]; then
-  mapfile -t PARTS < <(find "${REPO_DIR}/policy" -maxdepth 1 -type f \
-    -name 'policy_epoch_475.pt.part-*' | sort)
+  PARTS=("${REPO_DIR}"/policy/policy_epoch_475.pt.part-*)
   [[ "${#PARTS[@]}" -eq 3 ]] || die "Expected exactly 3 epoch-475 shards; found ${#PARTS[@]}"
   tmp_weights="${RAW_WEIGHTS}.assembling"
   : >"${tmp_weights}"
   for part in "${PARTS[@]}"; do
-    size="$(stat -c '%s' "${part}")"
+    size="$(wc -c <"${part}" | tr -d '[:space:]')"
     (( size <= 104857600 )) || die "Shard exceeds 100 MiB: ${part}"
     cat "${part}" >>"${tmp_weights}"
   done
   expected="$(awk 'NR==1 {print tolower($1)}' policy/policy_epoch_475.pt.sha256)"
-  actual="$(sha256sum "${tmp_weights}" | awk '{print $1}')"
+  actual="$("${PYTHON_BIN}" - "${tmp_weights}" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as stream:
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(block)
+print(digest.hexdigest())
+PY
+)"
   [[ "${actual}" == "${expected}" ]] || die "Epoch-475 SHA-256 mismatch: ${actual} != ${expected}"
   mv "${tmp_weights}" "${RAW_WEIGHTS}"
 fi
@@ -387,14 +438,14 @@ lr_warmup_epochs: 20
 seq_floor_warmup_epochs: 20
 batch_size_per_gpu: ${BATCH_SIZE_PER_GPU}
 grad_accum: ${GRAD_ACCUM}
-epochs: 401
-steps_per_epoch: 1000
+epochs: ${EPOCHS}
+steps_per_epoch: ${STEPS_PER_EPOCH}
 ckpt_interval: 10
 full_state_ckpt_interval: 10
 mixed_precision: "${MIXED_PRECISION}"
 lanes: ${LANES}
 n_workers: ${COLLECTOR_WORKERS}
-train_timesteps_per_epoch: 750
+train_timesteps_per_epoch: ${TRAIN_TIMESTEPS_PER_EPOCH}
 temp_low: 1.0
 temp_high: 2.0
 val_timesteps: 0
@@ -459,7 +510,7 @@ POLICY_ROOT="${CKPT_ROOT}/policy_weights"
 RESUME_EPOCH=""
 if [[ -d "${STATE_ROOT}" ]]; then
   RESUME_EPOCH="$({ find "${STATE_ROOT}" -mindepth 1 -maxdepth 1 -type d \
-    -name "${RUN_NAME}_epoch_*" -printf '%f\n' 2>/dev/null || true; } \
+    -name "${RUN_NAME}_epoch_*" -exec basename {} \; 2>/dev/null || true; } \
     | sed -n 's/.*_epoch_\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1)"
 fi
 
@@ -573,7 +624,7 @@ else
 fi
 
 log "Launching synchronized SmallG1OnlineV1a collection + learning with W&B run ${WANDB_PROJECT}/${WANDB_RUN_ID}"
-log "Each epoch collects ${COLLECTOR_PROCESSES}x(${LANES_PER_COLLECTOR} lanes x 750 steps), then performs 1000 updates at ${BATCH_SIZE_PER_GPU}x${GRAD_ACCUM}"
+log "Each epoch collects ${COLLECTOR_PROCESSES}x(${LANES_PER_COLLECTOR} lanes x ${TRAIN_TIMESTEPS_PER_EPOCH} steps), then performs ${STEPS_PER_EPOCH} updates at ${BATCH_SIZE_PER_GPU}x${GRAD_ACCUM}"
 set +e
 "${PYTHON_BIN}" -m metamon.rl.taurosv1b_online \
   --run_config "${RUN_CONFIG}" --mode both \
